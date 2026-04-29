@@ -118,97 +118,85 @@ function buildListMsg() {
 }
 
 // ── Two-way Telegram: polling ─────────────────────────────────
-let lastUpdateId = 0;
-
-async function pollTelegram() {
-  try {
-    const url = `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=${lastUpdateId+1}&timeout=30`;
-    const data = await new Promise(resolve => {
-      https.get(url, res => {
-        let body = '';
-        res.on('data', d => body += d);
-        res.on('end', () => { try { resolve(JSON.parse(body)); } catch(e) { resolve(null); } });
-      }).on('error', () => resolve(null));
-    });
-
-    if (!data || !data.ok) return;
-
-    for (const update of data.result) {
-      lastUpdateId = update.update_id;
-      const msg = update.message;
-      if (!msg || String(msg.chat.id) !== String(CHAT_ID)) continue;
-
-      const text = (msg.text || '').trim().toLowerCase();
-      console.log('Incoming:', text);
-
-      // list
-      if (text === 'list') {
-        await sendTelegram(buildListMsg());
-        continue;
-      }
-
-      // done [task name]
-      if (text.startsWith('done ')) {
-        const query = text.slice(5).trim();
-        const todayStr = getTodayStr();
-        const task = tasks.find(t => t.title.toLowerCase().includes(query));
-        if (task) {
-          if (!task.doneDate) task.doneDate = {};
-          task.doneDate[todayStr] = true;
-          await sendTelegram(`✅ Marked done: ${task.title}`);
-        } else {
-          await sendTelegram(`❌ Task not found: "${query}"`);
-        }
-        continue;
-      }
-
-      // add [task] today/tomorrow [time]
-      if (text.startsWith('add ')) {
-        const rest = msg.text.slice(4).trim();
-        let date = getTodayStr();
-        let title = rest;
-        let time = null;
-
-        if (/tomorrow/i.test(rest)) {
-          const tom = getEasternDate(); tom.setDate(tom.getDate()+1);
-          date = dateStr(tom);
-          title = rest.replace(/tomorrow/i, '').trim();
-        } else if (/today/i.test(rest)) {
-          title = rest.replace(/today/i, '').trim();
-        }
-
-        // extract time like 3pm, 4:30pm, 14:00
-        const timeMatch = title.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
-        if (timeMatch) {
-          let h = parseInt(timeMatch[1]);
-          const m = parseInt(timeMatch[2] || '0');
-          const ampm = timeMatch[3].toLowerCase();
-          if (ampm === 'pm' && h !== 12) h += 12;
-          if (ampm === 'am' && h === 12) h = 0;
-          time = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
-          title = title.replace(timeMatch[0], '').trim();
-        }
-
-        const newTask = { id: Date.now().toString(), title, type: 'once', date, time, priority: 'medium' };
-        tasks.push(newTask);
-        await sendTelegram(`✅ Added: ${title}${time ? ' at ' + time : ''} on ${date}`);
-        continue;
-      }
-
-      // unknown
-      await sendTelegram('Commands:\n• list\n• done [task name]\n• add [task] today/tomorrow [3pm]');
-    }
-  } catch(e) {
-    console.error('Poll error:', e.message);
-    await new Promise(r => setTimeout(r, 5000));
-  }
-  await new Promise(r => setTimeout(r, 2000));
-}
-
 async function startPolling() {
   console.log('Starting Telegram polling...');
+  let offset = 0;
   while (true) {
-    await pollTelegram();
+    try {
+      const url = `https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=${offset}&timeout=20`;
+      const data = await new Promise((resolve) => {
+        const req = https.get(url, res => {
+          let body = '';
+          res.on('data', d => body += d);
+          res.on('end', () => { try { resolve(JSON.parse(body)); } catch(e) { resolve(null); } });
+        });
+        req.on('error', () => resolve(null));
+        req.setTimeout(25000, () => { req.destroy(); resolve(null); });
+      });
+
+      if (!data || !data.ok || !data.result) {
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
+
+      for (const update of data.result) {
+        offset = update.update_id + 1;
+        const msg = update.message;
+        if (!msg || String(msg.chat.id) !== String(CHAT_ID)) continue;
+
+        const text = (msg.text || '').trim();
+        const lower = text.toLowerCase();
+        console.log('Incoming:', lower);
+
+        if (lower === 'list') {
+          await sendTelegram(buildListMsg());
+        } else if (lower.startsWith('done ')) {
+          const query = lower.slice(5).trim();
+          const todayStr = getTodayStr();
+          const task = tasks.find(t => t.title.toLowerCase().includes(query));
+          if (task) {
+            if (!task.doneDate) task.doneDate = {};
+            task.doneDate[todayStr] = true;
+            await sendTelegram(`✅ Marked done: ${task.title}`);
+          } else {
+            await sendTelegram(`❌ Task not found: "${query}"`);
+          }
+        } else if (lower.startsWith('add ')) {
+          const rest = text.slice(4).trim();
+          let date = getTodayStr();
+          let title = rest;
+          let time = null;
+
+          if (/tomorrow/i.test(rest)) {
+            const tom = getEasternDate(); tom.setDate(tom.getDate()+1);
+            date = dateStr(tom);
+            title = rest.replace(/tomorrow/i, '').trim();
+          } else if (/today/i.test(rest)) {
+            title = rest.replace(/today/i, '').trim();
+          }
+
+          const timeMatch = title.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
+          if (timeMatch) {
+            let h = parseInt(timeMatch[1]);
+            const m = parseInt(timeMatch[2] || '0');
+            const ampm = timeMatch[3].toLowerCase();
+            if (ampm === 'pm' && h !== 12) h += 12;
+            if (ampm === 'am' && h === 12) h = 0;
+            time = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+            title = title.replace(timeMatch[0], '').trim();
+          }
+
+          const newTask = { id: Date.now().toString(), title, type: 'once', date, time, priority: 'medium' };
+          tasks.push(newTask);
+          await sendTelegram(`✅ Added: ${title}${time ? ' at ' + time : ''} on ${date}`);
+        } else {
+          await sendTelegram('Commands:\n• list\n• done [task name]\n• add [task] today/tomorrow [3pm]');
+        }
+      }
+    } catch(e) {
+      console.error('Poll error:', e.message);
+      await new Promise(r => setTimeout(r, 5000));
+    }
   }
 }
 
@@ -248,11 +236,12 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(process.env.PORT || 3000, () => {
-  console.log('Server running');
+const PORT = parseInt(process.env.PORT) || 3000;
+server.listen(PORT, '0.0.0.0', () => {
+  console.log('Server running on port', PORT);
   startScheduler();
   startKeepAlive();
-  startPolling(); // start two-way polling
+  startPolling();
 });
 
 // ── Scheduler ────────────────────────────────────────────────
@@ -266,7 +255,7 @@ function startScheduler() {
 
 function startKeepAlive() {
   setInterval(() => {
-    http.get(`http://localhost:${process.env.PORT||3000}/ping`, ()=>{}).on('error',()=>{});
+    http.get(`http://localhost:${PORT}/ping`, ()=>{}).on('error',()=>{});
   }, 10 * 60 * 1000);
 }
 
