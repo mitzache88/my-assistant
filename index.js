@@ -200,9 +200,16 @@ async function pollTelegram() {
     }
   } catch(e) {
     console.error('Poll error:', e.message);
+    await new Promise(r => setTimeout(r, 5000));
   }
-  // poll again immediately
-  setTimeout(pollTelegram, 1000);
+  await new Promise(r => setTimeout(r, 2000));
+}
+
+async function startPolling() {
+  console.log('Starting Telegram polling...');
+  while (true) {
+    await pollTelegram();
+  }
 }
 
 // ── HTTP server ───────────────────────────────────────────────
@@ -231,6 +238,11 @@ const server = http.createServer((req, res) => {
       const r = await sendTelegram('Test from your assistant server! Everything is working. ✅');
       res.writeHead(200); res.end(JSON.stringify({ ok: r && r.ok })); return;
     }
+    if (req.method === 'GET' && req.url === '/tasks') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, tasks }));
+      return;
+    }
     if (req.method === 'GET' && req.url === '/ping') { res.writeHead(200); res.end('pong'); return; }
     res.writeHead(200); res.end(`Assistant running. Tasks: ${tasks.length}`);
   });
@@ -240,7 +252,7 @@ server.listen(process.env.PORT || 3000, () => {
   console.log('Server running');
   startScheduler();
   startKeepAlive();
-  pollTelegram(); // start two-way polling
+  startPolling(); // start two-way polling
 });
 
 // ── Scheduler ────────────────────────────────────────────────
