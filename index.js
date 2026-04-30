@@ -376,9 +376,11 @@ async function startPolling() {
         const effectiveLower = cleanLower;
  
         // Check for schedule/list queries for specific days
-        const scheduleQuery = effectiveLower.match(/\b(what'?s?|show me|get|give me|tell me)?\s*(my\s*)?(schedule|tasks|list|agenda|plan|day|calendar|on)\s*(for\s*)?(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|this week)(\?)?/i)
+        const scheduleQuery = effectiveLower.match(/\b(what'?s?|show me|get|give me|tell me|what do i have|what (do i need to|should i|have i got|is on my)|do i have anything|remind me what)\s*(my\s*)?(schedule|tasks|list|agenda|plan|day|calendar|on|to do|todo|due)?\s*(for\s*)?(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|this week)(\?)?/i)
+          || effectiveLower.match(/\bwhat (do i have|is (on|scheduled|planned)|should i do|are my tasks|tasks (do i have|are there))\b/i)
           || effectiveLower.match(/^(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)('?s)?\s*(schedule|tasks|list|agenda|plan)?(\?)?$/i)
-          || effectiveLower.match(/^(list|tasks|agenda|schedule|what do i have|what'?s up|my day)(\?)?$/i);
+          || effectiveLower.match(/^(list|tasks|agenda|schedule|what do i have|what'?s up|my day)(\?)?$/i)
+          || effectiveLower.match(/what (do i|have i) (have|got|need) (to do|scheduled|planned|coming up)(\s*(today|tomorrow|this week|on \w+))?(\?)?/i);
  
         if (scheduleQuery) {
           const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
@@ -498,7 +500,8 @@ async function startPolling() {
           // Smart fallback: if message has date/time clue, try to schedule it anyway
           const hasDateClue = /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|tonight)\b/i.test(effectiveLower);
           const hasTimeClue = /\b\d{1,2}(:\d{2})?\s*(am|pm)\b/i.test(effectiveLower);
-          if (hasDateClue || hasTimeClue) {
+          const looksLikeQuestion = /\b(what|when|where|who|how|do i|have i|should i|is there|are there|can i)\b/i.test(effectiveLower) || effectiveLower.endsWith('?');
+          if ((hasDateClue || hasTimeClue) && !looksLikeQuestion) {
             let date = getTodayStr();
             let title = effectiveText;
             let time = null;
