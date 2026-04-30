@@ -375,6 +375,36 @@ async function startPolling() {
         const effectiveText = cleanText;
         const effectiveLower = cleanLower;
  
+        // Check for "when" queries — find a specific task
+        const whenQuery = effectiveLower.match(/\b(when (do i|should i|am i|is|are)|when'?s)\s+(my\s+)?(.*?)\??$/i)
+          || effectiveLower.match(/^(when is|when do i have|when did i schedule|find)\s+(.*?)\??$/i);
+ 
+        if (whenQuery) {
+          const searchTerm = (whenQuery[4] || whenQuery[2] || '').replace(/\?/g,'').trim();
+          if (searchTerm.length > 1) {
+            const found = tasks.filter(t => t.title.toLowerCase().includes(searchTerm.toLowerCase()));
+            if (found.length === 0) {
+              await sendTelegram(`❌ No task found matching "${searchTerm}"`);
+            } else {
+              const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+              const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+              let msg = `🔍 Found ${found.length} task${found.length>1?'s':''} matching "${searchTerm}":\n\n`;
+              found.forEach(t => {
+                if (t.type === 'once' || t.type === 'timed') {
+                  const d = new Date(t.date + 'T12:00:00');
+                  const label = `${days[d.getDay()]}, ${months[d.getMonth()]} ${d.getDate()}`;
+                  msg += `📅 ${t.title}${t.time ? ' at ' + t.time : ''}\n   ${label}\n\n`;
+                } else {
+                  const recLabels = {daily:'Every day',weekday:'Every weekday',weekly:`Every ${days[t.weekDay||1]}`,biweekly:`Every 2 weeks on ${days[t.weekDay||1]}`,dom:`Every ${t.domDay}${['th','st','nd','rd'][Math.min(t.domDay%10,3)] || 'th'} of month`,lastdom:'Last day of month',xdays:`Every ${t.xdays} days`};
+                  msg += `🔄 ${t.title}\n   ${recLabels[t.recur] || 'Recurring'}\n\n`;
+                }
+              });
+              await sendTelegram(msg.trim());
+            }
+            continue;
+          }
+        }
+ 
         // Check for schedule/list queries for specific days
         const scheduleQuery = effectiveLower.match(/\b(what'?s?|show me|get|give me|tell me|what do i have|what (do i need to|should i|have i got|is on my)|do i have anything|remind me what)\s*(my\s*)?(schedule|tasks|list|agenda|plan|day|calendar|on|to do|todo|due)?\s*(for\s*)?(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|this week)(\?)?/i)
           || effectiveLower.match(/\bwhat (do i have|is (on|scheduled|planned)|should i do|are my tasks|tasks (do i have|are there))\b/i)
