@@ -1,8 +1,12 @@
 const https = require('https');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const FormData = require('form-data');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
+const OPENAI_KEY = process.env.OPENAI_KEY;
 
 let tasks = [];
 try { tasks = JSON.parse(process.env.TASKS || '[]'); } catch(e) {}
@@ -71,6 +75,58 @@ function sendTelegram(text) {
     });
     req.on('error', () => resolve(null));
     req.write(body); req.end();
+  });
+}
+
+// ── Voice transcription ───────────────────────────────────────
+async function getTelegramFileUrl(fileId) {
+  return new Promise(resolve => {
+    https.get(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${fileId}`, res => {
+      let body = '';
+      res.on('data', d => body += d);
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          if (data.ok) resolve(`https://api.telegram.org/file/bot${BOT_TOKEN}/${data.result.file_path}`);
+          else resolve(null);
+        } catch(e) { resolve(null); }
+      });
+    }).on('error', () => resolve(null));
+  });
+}
+
+async function downloadFile(url) {
+  return new Promise((resolve, reject) => {
+    const tmpPath = path.join('/tmp', `voice_${Date.now()}.oga`);
+    const file = fs.createWriteStream(tmpPath);
+    https.get(url, res => {
+      res.pipe(file);
+      file.on('finish', () => { file.close(); resolve(tmpPath); });
+    }).on('error', reject);
+  });
+}
+
+async function transcribeVoice(filePath) {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append('file', fs.createReadStream(filePath), { filename: 'voice.oga', contentType: 'audio/ogg' });
+    form.append('model', 'whisper-1');
+    const options = {
+      hostname: 'api.openai.com',
+      path: '/v1/audio/transcriptions',
+      method: 'POST',
+      headers: { ...form.getHeaders(), 'Authorization': `Bearer ${OPENAI_KEY}` }
+    };
+    const req = https.request(options, res => {
+      let body = '';
+      res.on('data', d => body += d);
+      res.on('end', () => {
+        try { resolve(JSON.parse(body).text || null); }
+        catch(e) { resolve(null); }
+      });
+    });
+    req.on('error', reject);
+    form.pipe(req);
   });
 }
 
@@ -211,8 +267,34 @@ async function startPolling() {
         const lower = text.toLowerCase();
         console.log('Incoming:', lower);
 
+        // Handle voice messages
+        if (msg.voice || msg.audio) {
+          const fileId = (msg.voice || msg.audio).file_id;
+          await sendTelegram('🎙️ Transcribing your voice message...');
+          try {
+            const fileUrl = await getTelegramFileUrl(fileId);
+            if (!fileUrl) { await sendTelegram('❌ Could not download voice message. Try again.'); continue; }
+            const filePath = await downloadFile(fileUrl);
+            const transcribed = await transcribeVoice(filePath);
+            fs.unlink(filePath, ()=>{});
+            if (!transcribed) { await sendTelegram('❌ Could not transcribe. Please try again.'); continue; }
+            console.log('Transcribed:', transcribed);
+            await sendTelegram(`🎙️ I heard: "${transcribed}"`);
+            // Process transcribed text as if it was typed
+            msg.text = transcribed;
+          } catch(e) {
+            console.error('Voice error:', e.message);
+            await sendTelegram('❌ Voice processing failed. Please try again.');
+            continue;
+          }
+        }
+
+        // Re-read text (may have been set by voice transcription)
+        const finalText = (msg.text || '').trim();
+        const finalLower = finalText.toLowerCase();
+
         // Strip "hey" prefix and reprocess naturally
-        const cleanText = text.replace(/^hey[,!]?\s*/i, '').trim();
+        const cleanText = finalText.replace(/^hey[,!]?\s*/i, '').trim();
         const cleanLower = cleanText.toLowerCase();
         const effectiveText = cleanText;
         const effectiveLower = cleanLower;
