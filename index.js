@@ -150,7 +150,23 @@ function buildEveningMsg() {
   return msg + '\nOpen your assistant to mark done or move to tomorrow.';
 }
 
-function buildListMsg() {
+function buildListMsg() { return buildListMsgForDate(getEasternDate()); }
+
+function buildListMsgForDate(d) {
+  const todayStr = getTodayStr();
+  const ds = dateStr(d);
+  const dayTasks = getTasksForDate(d);
+  const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  let label = ds === todayStr ? 'Today' : `${days[d.getDay()]}, ${months[d.getMonth()]} ${d.getDate()}`;
+  if (!dayTasks.length) return `📋 ${label}:\n\nNo tasks. Enjoy your day!`;
+  let msg = `📋 ${label}:\n\n`;
+  const timed = dayTasks.filter(t => t.time).sort((a,b) => a.time > b.time ? 1 : -1);
+  const other = dayTasks.filter(t => !t.time);
+  if (timed.length) { timed.forEach(t => msg += `  ${isDone(t,ds)?'✅':'⏰'} ${t.time} — ${t.title}${t.priority==='high'?' ❗':''}\n`); }
+  if (other.length) { if (timed.length) msg += '\n'; other.forEach(t => msg += `  ${isDone(t,ds)?'✅':'☐'} ${t.title}${t.priority==='high'?' ❗':''}\n`); }
+  return msg;
+}
   const now = getEasternDate();
   const todayStr = getTodayStr();
   const todayTasks = getTasksForDate(now);
@@ -201,8 +217,28 @@ async function startPolling() {
         const effectiveText = cleanText;
         const effectiveLower = cleanLower;
 
-        if (/^(list|tasks|today|what('?s| is) (on my list|on the list|today|my tasks)|show( me)? (my )?(tasks|list|today)|what do i have|what('?s| is) up today|my day|agenda)(\?)?$/i.test(effectiveLower)) {
-          await sendTelegram(buildListMsg());
+        // Check for schedule/list queries for specific days
+        const scheduleQuery = effectiveLower.match(/\b(what'?s?|show me|get|give me|tell me)?\s*(my\s*)?(schedule|tasks|list|agenda|plan|day|calendar|on)\s*(for\s*)?(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|this week)(\?)?/i)
+          || effectiveLower.match(/^(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)('?s)?\s*(schedule|tasks|list|agenda|plan)?(\?)?$/i)
+          || effectiveLower.match(/^(list|tasks|agenda|schedule|what do i have|what'?s up|my day)(\?)?$/i);
+
+        if (scheduleQuery) {
+          const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+          const msg2 = effectiveLower;
+          let targetDate = getEasternDate();
+          if (/tomorrow/i.test(msg2)) { targetDate.setDate(targetDate.getDate()+1); }
+          else {
+            const dayMatch = msg2.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
+            if (dayMatch) {
+              const td = dayNames.indexOf(dayMatch[1].toLowerCase());
+              const now = getEasternDate();
+              let da = td - now.getDay();
+              if (da < 0) da += 7;
+              if (da === 0) da = 0; // today if same day
+              targetDate = new Date(now); targetDate.setDate(now.getDate()+da);
+            }
+          }
+          await sendTelegram(buildListMsgForDate(targetDate));
         } else if (/^(done|complete|completed|finish|finished|mark|checked off|check off|i (did|finished|completed|done))\s+/i.test(effectiveLower)) {
           const query = effectiveLower.replace(/^(done|complete|completed|finish|finished|mark|checked off|check off|i (did|finished|completed|done))\s+/i,'').replace(/\s+as\s+(done|complete|finished)\s*$/i,'').replace(/^(the\s+)/i,'').trim();
           const todayStr = getTodayStr();
