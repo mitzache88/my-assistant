@@ -215,12 +215,25 @@ async function startPolling() {
           let title = rest;
           let time = null;
 
+          const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+          const dayMatch = title.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i);
+
           if (/tomorrow/i.test(rest)) {
             const tom = getEasternDate(); tom.setDate(tom.getDate()+1);
             date = dateStr(tom);
             title = rest.replace(/tomorrow/i, '').trim();
           } else if (/today/i.test(rest)) {
             title = rest.replace(/today/i, '').trim();
+          } else if (dayMatch) {
+            const targetDay = dayNames.indexOf(dayMatch[1].toLowerCase());
+            const now = getEasternDate();
+            const currentDay = now.getDay();
+            let daysAhead = targetDay - currentDay;
+            if (daysAhead <= 0) daysAhead += 7; // always next occurrence
+            const target = new Date(now);
+            target.setDate(now.getDate() + daysAhead);
+            date = dateStr(target);
+            title = title.replace(dayMatch[0], '').trim();
           }
 
           const timeMatch = title.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
@@ -239,7 +252,7 @@ async function startPolling() {
           await saveTasksToDB();
           await sendTelegram(`✅ Added: ${title}${time ? ' at ' + time : ''} on ${date}`);
         } else {
-          await sendTelegram('Commands:\n• list\n• done [task name]\n• add [task] today/tomorrow [3pm]');
+          await sendTelegram('Commands:\n• list\n• done [task name]\n• add [task] today/tomorrow/saturday [3pm]');
         }
       }
     } catch(e) {
