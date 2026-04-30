@@ -3,17 +3,17 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const FormData = require('form-data');
- 
+
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 const OPENAI_KEY = process.env.OPENAI_KEY;
- 
+
 let tasks = [];
 try { tasks = JSON.parse(process.env.TASKS || '[]'); } catch(e) {}
- 
+
 const JSONBIN_ID = process.env.JSONBIN_ID;
 const JSONBIN_KEY = process.env.JSONBIN_KEY;
- 
+
 async function loadTasksFromDB() {
   try {
     const data = await new Promise(resolve => {
@@ -34,7 +34,7 @@ async function loadTasksFromDB() {
     }
   } catch(e) { console.error('Load DB error:', e.message); }
 }
- 
+
 async function saveTasksToDB() {
   try {
     const body = JSON.stringify({ tasks });
@@ -77,7 +77,7 @@ function sendTelegram(text) {
     req.write(body); req.end();
   });
 }
- 
+
 // ── Voice transcription ───────────────────────────────────────
 async function getTelegramFileUrl(fileId) {
   return new Promise(resolve => {
@@ -94,7 +94,7 @@ async function getTelegramFileUrl(fileId) {
     }).on('error', () => resolve(null));
   });
 }
- 
+
 async function downloadFile(url) {
   return new Promise((resolve, reject) => {
     const tmpPath = path.join('/tmp', `voice_${Date.now()}.oga`);
@@ -105,7 +105,7 @@ async function downloadFile(url) {
     }).on('error', reject);
   });
 }
- 
+
 async function transcribeVoice(filePath) {
   return new Promise((resolve, reject) => {
     const form = new FormData();
@@ -129,7 +129,7 @@ async function transcribeVoice(filePath) {
     form.pipe(req);
   });
 }
- 
+
 async function translateToEnglish(text) {
   const body = JSON.stringify({
     model: 'gpt-4o-mini',
@@ -162,7 +162,7 @@ async function translateToEnglish(text) {
     req.write(body); req.end();
   });
 }
- 
+
 async function speakReply(text) {
   // Strip emojis for cleaner speech
   const clean = text.replace(/[\u{1F300}-\u{1FAFF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '').replace(/[☐✅⏰❗⚠️📋➕✔️🎉🎙️❌📅]/g, '').trim();
@@ -184,7 +184,7 @@ async function speakReply(text) {
     req.write(body); req.end();
   });
 }
- 
+
 async function sendVoiceReply(text) {
   try {
     const filePath = await speakReply(text);
@@ -213,7 +213,7 @@ async function sendVoiceReply(text) {
     await sendTelegram(text);
   }
 }
- 
+
 function getEasternDate() {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
 }
@@ -222,7 +222,7 @@ function dateStr(d) {
 }
 function getTodayStr() { return dateStr(getEasternDate()); }
 function isLastDayOfMonth(d) { const n=new Date(d); n.setDate(n.getDate()+1); return n.getDate()===1; }
- 
+
 function isTaskOnDate(task, d) {
   const ds = dateStr(d);
   if (task.endDate && ds > task.endDate) return false;
@@ -247,10 +247,10 @@ function isTaskOnDate(task, d) {
   }
   return false;
 }
- 
+
 function isDone(task, ds) { return !!(task.doneDate && task.doneDate[ds]); }
 function getTasksForDate(d) { return tasks.filter(t => isTaskOnDate(t, d)); }
- 
+
 // ── Message builders ─────────────────────────────────────────
 function buildMorningMsg() {
   const now = getEasternDate();
@@ -259,26 +259,26 @@ function buildMorningMsg() {
   const yesterdayStr = dateStr(yesterday);
   const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
- 
+
   let msg = `Good morning! ${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}:\n\n`;
- 
+
   const yesterdayUndone = getTasksForDate(yesterday).filter(t => !isDone(t, yesterdayStr));
   if (yesterdayUndone.length > 0) {
     msg += '⚠️ Not done yesterday:\n';
     yesterdayUndone.forEach(t => msg += `  • ${t.title}\n`);
     msg += '\n';
   }
- 
+
   const todayTasks = getTasksForDate(now);
   if (todayTasks.length === 0) { return msg + 'No tasks today. Enjoy your day!'; }
- 
+
   const timed = todayTasks.filter(t => t.time).sort((a,b) => a.time > b.time ? 1 : -1);
   const other = todayTasks.filter(t => !t.time);
   if (timed.length > 0) { msg += "Scheduled:\n"; timed.forEach(t => msg += `  ${t.time} — ${t.title}${t.priority==='high'?' ❗':''}\n`); }
   if (other.length > 0) { msg += "\nTasks:\n"; other.forEach(t => msg += `  • ${t.title}${t.priority==='high'?' ❗':''}\n`); }
   return msg + '\nHave a great day!';
 }
- 
+
 function buildEveningMsg() {
   const now = getEasternDate();
   const todayStr = getTodayStr();
@@ -288,9 +288,9 @@ function buildEveningMsg() {
   undone.forEach(t => msg += `  • ${t.title}\n`);
   return msg + '\nOpen your assistant to mark done or move to tomorrow.';
 }
- 
+
 function buildListMsg() { return buildListMsgForDate(getEasternDate()); }
- 
+
 function buildListMsgForDate(d) {
   const todayStr = getTodayStr();
   const ds = dateStr(d);
@@ -306,8 +306,15 @@ function buildListMsgForDate(d) {
   if (other.length) { if (timed.length) msg += '\n'; other.forEach(t => msg += `  ${isDone(t,ds)?'✅':'☐'} ${t.title}${t.priority==='high'?' ❗':''}\n`); }
   return msg;
 }
- 
-// ── Two-way Telegram: polling ─────────────────────────────────
+
+// Smart reply — voice if input was voice, text otherwise
+async function reply(text, voice) {
+  if (voice) {
+    await sendVoiceReply(text);
+  } else {
+    await sendTelegram(text);
+  }
+}
 async function startPolling() {
   console.log('Starting Telegram polling...');
   let offset = 0;
@@ -323,22 +330,22 @@ async function startPolling() {
         req.on('error', () => resolve(null));
         req.setTimeout(25000, () => { req.destroy(); resolve(null); });
       });
- 
+
       if (!data || !data.ok || !data.result) {
         await new Promise(r => setTimeout(r, 3000));
         continue;
       }
- 
+
       for (const update of data.result) {
         offset = update.update_id + 1;
         const msg = update.message;
         if (!msg || String(msg.chat.id) !== String(CHAT_ID)) continue;
- 
+
         const text = (msg.text || '').trim();
         const lower = text.toLowerCase();
         console.log('Incoming:', lower);
         let isVoiceMessage = false;
- 
+
         // Handle voice messages
         if (msg.voice || msg.audio) {
           isVoiceMessage = true;
@@ -362,29 +369,29 @@ async function startPolling() {
             continue;
           }
         }
- 
+
         // Re-read text (may have been set by voice transcription)
         const rawText = (msg.text || '').trim();
         // Translate to English if needed (works for typed Romanian/Spanish too)
         const finalText = rawText ? await translateToEnglish(rawText) : '';
         const finalLower = finalText.toLowerCase();
- 
+
         // Strip "hey" prefix and reprocess naturally
         const cleanText = finalText.replace(/^hey[,!]?\s*/i, '').trim();
         const cleanLower = cleanText.toLowerCase();
         const effectiveText = cleanText;
         const effectiveLower = cleanLower;
- 
+
         // Check for "when" queries — find a specific task
         const whenQuery = effectiveLower.match(/\b(when (do i|should i|am i|is|are)|when'?s)\s+(my\s+)?(.*?)\??$/i)
           || effectiveLower.match(/^(when is|when do i have|when did i schedule|find)\s+(.*?)\??$/i);
- 
+
         if (whenQuery) {
           const searchTerm = (whenQuery[4] || whenQuery[2] || '').replace(/\?/g,'').trim();
           if (searchTerm.length > 1) {
             const found = tasks.filter(t => t.title.toLowerCase().includes(searchTerm.toLowerCase()));
             if (found.length === 0) {
-              await sendTelegram(`❌ No task found matching "${searchTerm}"`);
+              await reply(`❌ No task found matching "${searchTerm}"`);
             } else {
               const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
               const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -399,19 +406,19 @@ async function startPolling() {
                   msg += `🔄 ${t.title}\n   ${recLabels[t.recur] || 'Recurring'}\n\n`;
                 }
               });
-              await sendTelegram(msg.trim());
+              await reply(msg.trim(), isVoiceMessage);
             }
             continue;
           }
         }
- 
+
         // Check for schedule/list queries for specific days
         const scheduleQuery = effectiveLower.match(/\b(what'?s?|show me|get|give me|tell me|what do i have|what (do i need to|should i|have i got|is on my)|do i have anything|remind me what)\s*(my\s*)?(schedule|tasks|list|agenda|plan|day|calendar|on|to do|todo|due)?\s*(for\s*)?(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|this week)(\?)?/i)
           || effectiveLower.match(/\bwhat (do i have|is (on|scheduled|planned)|should i do|are my tasks|tasks (do i have|are there))\b/i)
           || effectiveLower.match(/^(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)('?s)?\s*(schedule|tasks|list|agenda|plan)?(\?)?$/i)
           || effectiveLower.match(/^(list|tasks|agenda|schedule|what do i have|what'?s up|my day)(\?)?$/i)
           || effectiveLower.match(/what (do i|have i) (have|got|need) (to do|scheduled|planned|coming up)(\s*(today|tomorrow|this week|on \w+))?(\?)?/i);
- 
+
         if (scheduleQuery) {
           const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
           const msg2 = effectiveLower;
@@ -428,7 +435,7 @@ async function startPolling() {
               targetDate = new Date(now); targetDate.setDate(now.getDate()+da);
             }
           }
-          await (isVoiceMessage ? sendVoiceReply(buildListMsgForDate(targetDate)) : sendTelegram(buildListMsgForDate(targetDate)));
+          await reply(buildListMsgForDate(targetDate), isVoiceMessage);
         } else if (/^(done|complete|completed|finish|finished|mark|checked off|check off|i (did|finished|completed|done))\s+/i.test(effectiveLower)) {
           const query = effectiveLower.replace(/^(done|complete|completed|finish|finished|mark|checked off|check off|i (did|finished|completed|done))\s+/i,'').replace(/\s+as\s+(done|complete|finished)\s*$/i,'').replace(/^(the\s+)/i,'').trim();
           const todayStr = getTodayStr();
@@ -437,18 +444,18 @@ async function startPolling() {
             if (!task.doneDate) task.doneDate = {};
             task.doneDate[todayStr] = true;
             await saveTasksToDB();
-            await sendTelegram(`✅ Marked done: ${task.title}`);
+            await reply(`✅ Marked done: ${task.title}`, isVoiceMessage);
           } else {
-            await sendTelegram(`❌ Task not found: "${query}"`);
+            await reply(`❌ Task not found: "${query}"`, isVoiceMessage);
           }
         } else if (/^(add|schedule|remind me to|remind me|set( up| a)?|create( a)?|new task|put( in)?|i need to|don'?t forget( to)?|note( to self)?|book( a)?|plan( a)?|make( a)?|set a reminder( to)?|add a|log)\s+/i.test(effectiveLower)) {
           const rest = effectiveText.replace(/^(add|schedule|remind me to|remind me|set( up| a)?|create( a)?|new task|put( in)?|i need to|don'?t forget( to)?|note( to self)?|book( a)?|plan( a)?|make( a)?|set a reminder( to)?|add a|log)\s+/i, '').trim();
-          if (!rest) { await sendTelegram('❌ Please include a task name.\nExample: add wash the car saturday 12pm'); continue; }
- 
+          if (!rest) { await reply('❌ Please include a task name.\nExample: add wash the car saturday 12pm'); continue; }
+
           let date = getTodayStr();
           let title = rest;
           let time = null;
- 
+
           // Strip filler words that confuse parsing
           // e.g. "on friday", "on saturday at", "for tomorrow"
           let cleaned = title
@@ -456,11 +463,11 @@ async function startPolling() {
             .replace(/\bfor\s+(today|tomorrow)\b/gi, '$1')
             .replace(/\bthis\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '$1')
             .replace(/\bnext\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '$1');
- 
+
           // Parse date
           const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
           const dayMatch = cleaned.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i);
- 
+
           if (/\btomorrow\b/i.test(cleaned)) {
             const tom = getEasternDate(); tom.setDate(tom.getDate()+1);
             date = dateStr(tom);
@@ -477,7 +484,7 @@ async function startPolling() {
             date = dateStr(target);
             cleaned = cleaned.replace(dayMatch[0], '').trim();
           }
- 
+
           // Parse time — handle many formats:
           // "at 3pm", "at 3:30pm", "3pm", "15:00", "3 pm", "at 3", "@3pm"
           const timePatterns = [
@@ -488,7 +495,7 @@ async function startPolling() {
             /\bat\s+(\d{1,2}):(\d{2})\b/,
             /\b(\d{2}):(\d{2})\b/
           ];
- 
+
           for (const pattern of timePatterns) {
             const m = cleaned.match(pattern);
             if (m) {
@@ -507,24 +514,24 @@ async function startPolling() {
               break;
             }
           }
- 
+
           // Clean up leftover punctuation/spaces
           title = cleaned.replace(/\s+/g, ' ').replace(/^[,.\s]+|[,.\s]+$/g, '').trim();
- 
+
           // Validate title
           if (!title || title.length < 2) {
-            await sendTelegram('❌ Could not parse task name. Try:\nadd wash the car friday 12pm');
+            await reply('❌ Could not parse task name. Try:\nadd wash the car friday 12pm');
             continue;
           }
- 
+
           try {
             const newTask = { id: Date.now().toString(), title, type: 'once', date, time, priority: 'medium' };
             tasks.push(newTask);
             await saveTasksToDB();
             const dayLabel = date === getTodayStr() ? 'today' : new Date(date+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-            await sendTelegram(`✅ Added: "${title}"\n📅 ${dayLabel}${time ? '\n⏰ ' + time : ''}`);
+            await reply(`✅ Added: "${title}"\n📅 ${dayLabel}${time ? '\n⏰ ' + time : ''}`);
           } catch(e) {
-            await sendTelegram('❌ Something went wrong saving the task. Please try again.');
+            await reply('❌ Something went wrong saving the task. Please try again.');
           }
         } else {
           // Smart fallback: if message has date/time clue, try to schedule it anyway
@@ -548,12 +555,12 @@ async function startPolling() {
               const newTask={id:Date.now().toString(),title,type:'once',date,time,priority:'medium'};
               tasks.push(newTask);await saveTasksToDB();
               const dayLabel=date===getTodayStr()?'today':new Date(date+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-              await sendTelegram(`✅ Added: "${title}"\n📅 ${dayLabel}${time?'\n⏰ '+time:''}`);
+              await reply(`✅ Added: "${title}"\n📅 ${dayLabel}${time?'\n⏰ '+time:''}`, isVoiceMessage);
             } else {
-              await sendTelegram('Here\'s what I understand:\n\n📋 TO SEE TASKS:\nlist / tasks / today\n\n➕ TO ADD A TASK:\nadd / schedule / remind me to / book / plan / create / i need to / don\'t forget to / note to self / hey [task]\n\nExamples:\n• hey call Mike tomorrow 12pm\n• schedule dentist thursday 10am\n• remind me to pay bills friday\n• i need to go to the gym monday 7am\n\n✅ TO MARK DONE:\ndone / finished / i did [task name]');
+              await reply("Here's what I understand:\n\n📋 TO SEE TASKS:\nlist / tasks / today\n\n➕ TO ADD A TASK:\nadd / schedule / remind me to / book / plan / create / i need to / don't forget to / note to self / hey [task]\n\nExamples:\n• hey call Mike tomorrow 12pm\n• schedule dentist thursday 10am\n• remind me to pay bills friday\n• i need to go to the gym monday 7am\n\n✅ TO MARK DONE:\ndone / finished / i did [task name]", isVoiceMessage);
             }
           } else {
-            await sendTelegram('Here\'s what I understand:\n\n📋 TO SEE TASKS:\nlist / tasks / today\n\n➕ TO ADD A TASK:\nadd / schedule / remind me to / book / plan / create / i need to / don\'t forget to / note to self / hey [task]\n\nExamples:\n• hey call Mike tomorrow 12pm\n• schedule dentist thursday 10am\n• remind me to pay bills friday\n• i need to go to the gym monday 7am\n\n✅ TO MARK DONE:\ndone / finished / i did [task name]');
+            await reply("Here's what I understand:\n\n📋 TO SEE TASKS:\nlist / tasks / today\n\n➕ TO ADD A TASK:\nadd / schedule / remind me to / book / plan / create / i need to / don't forget to / note to self / hey [task]\n\nExamples:\n• hey call Mike tomorrow 12pm\n• schedule dentist thursday 10am\n• remind me to pay bills friday\n• i need to go to the gym monday 7am\n\n✅ TO MARK DONE:\ndone / finished / i did [task name]", isVoiceMessage);
           }
         }
       }
@@ -563,14 +570,14 @@ async function startPolling() {
     }
   }
 }
- 
+
 // ── HTTP server ───────────────────────────────────────────────
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
- 
+
   let body = '';
   req.on('data', c => body += c);
   req.on('end', async () => {
@@ -596,11 +603,44 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ ok: true, tasks }));
       return;
     }
+    if (req.method === 'POST' && req.url === '/ai') {
+      try {
+        const data = JSON.parse(body);
+        const messages = data.messages || [];
+        const context = data.context || '';
+        const apiKey = process.env.OPENAI_KEY;
+        console.log('AI endpoint hit, apiKey present:', !!apiKey);
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            max_tokens: 500,
+            messages: [
+              { role: 'system', content: `You are a friendly personal assistant in a task app. ${context} Be concise, warm and helpful.` },
+              ...messages.map(m => ({ role: m.role, content: m.content }))
+            ]
+          })
+        });
+        const d = await response.json();
+        const reply = d.choices?.[0]?.message?.content || "I couldn't process that.";
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, reply }));
+      } catch(e) {
+        console.error('AI error:', e.message);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, reply: "Sorry, couldn't connect. Try again!" }));
+      }
+      return;
+    }
     if (req.method === 'GET' && req.url === '/ping') { res.writeHead(200); res.end('pong'); return; }
     res.writeHead(200); res.end(`Assistant running. Tasks: ${tasks.length}`);
   });
 });
- 
+
 const PORT = parseInt(process.env.PORT) || 3000;
 server.listen(PORT, '0.0.0.0', async () => {
   console.log('Server running on port', PORT);
@@ -609,27 +649,27 @@ server.listen(PORT, '0.0.0.0', async () => {
   startKeepAlive();
   startPolling();
 });
- 
+
 // ── Scheduler ────────────────────────────────────────────────
 let lastMorning = null, lastEvening = null, sentReminders = {};
- 
+
 function startScheduler() {
   console.log('Scheduler started...');
   setInterval(checkSchedule, 60000);
   checkSchedule();
 }
- 
+
 function startKeepAlive() {
   setInterval(() => {
     http.get(`http://localhost:${PORT}/ping`, ()=>{}).on('error',()=>{});
   }, 10 * 60 * 1000);
 }
- 
+
 async function checkSchedule() {
   const now = getEasternDate();
   const h = now.getHours(), m = now.getMinutes();
   const todayKey = getTodayStr();
- 
+
   if (h === 8 && m === 0 && lastMorning !== todayKey) {
     lastMorning = todayKey;
     console.log('Sending morning digest...');
