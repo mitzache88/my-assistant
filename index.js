@@ -195,10 +195,10 @@ async function startPolling() {
         const lower = text.toLowerCase();
         console.log('Incoming:', lower);
 
-        if (lower === 'list') {
+        if (/^(list|tasks|today|what('?s| is) (on my list|on the list|today|my tasks)|show( me)? (my )?(tasks|list|today)|what do i have|what('?s| is) up today|my day|agenda)(\?)?$/i.test(lower)) {
           await sendTelegram(buildListMsg());
-        } else if (lower.startsWith('done ')) {
-          const query = lower.slice(5).trim();
+        } else if (/^(done|complete|completed|finish|finished|mark|checked off|check off|i (did|finished|completed|done))\s+/i.test(lower)) {
+          const query = lower.replace(/^(done|complete|completed|finish|finished|mark|checked off|check off|i (did|finished|completed|done))\s+/i,'').replace(/\s+as\s+(done|complete|finished)\s*$/i,'').replace(/^(the\s+)/i,'').trim();
           const todayStr = getTodayStr();
           const task = tasks.find(t => t.title.toLowerCase().includes(query));
           if (task) {
@@ -209,50 +209,93 @@ async function startPolling() {
           } else {
             await sendTelegram(`❌ Task not found: "${query}"`);
           }
-        } else if (lower.startsWith('add ')) {
-          const rest = text.slice(4).trim();
+        } else if (/^(add|schedule|remind me to|remind me|set( up| a)?|create( a)?|new task|put( in)?|i need to|don'?t forget( to)?|note( to self)?|book( a)?|plan( a)?|make( a)?|set a reminder( to)?|add a|log)\s+/i.test(lower)) {
+          const rest = text.replace(/^(add|schedule|remind me to|remind me|set( up| a)?|create( a)?|new task|put( in)?|i need to|don'?t forget( to)?|note( to self)?|book( a)?|plan( a)?|make( a)?|set a reminder( to)?|add a|log)\s+/i, '').trim();
+          if (!rest) { await sendTelegram('❌ Please include a task name.\nExample: add wash the car saturday 12pm'); continue; }
+
           let date = getTodayStr();
           let title = rest;
           let time = null;
 
-          const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-          const dayMatch = title.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i);
+          // Strip filler words that confuse parsing
+          // e.g. "on friday", "on saturday at", "for tomorrow"
+          let cleaned = title
+            .replace(/\bon\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)\b/gi, '$1')
+            .replace(/\bfor\s+(today|tomorrow)\b/gi, '$1')
+            .replace(/\bthis\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '$1')
+            .replace(/\bnext\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '$1');
 
-          if (/tomorrow/i.test(rest)) {
+          // Parse date
+          const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+          const dayMatch = cleaned.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i);
+
+          if (/\btomorrow\b/i.test(cleaned)) {
             const tom = getEasternDate(); tom.setDate(tom.getDate()+1);
             date = dateStr(tom);
-            title = rest.replace(/tomorrow/i, '').trim();
-          } else if (/today/i.test(rest)) {
-            title = rest.replace(/today/i, '').trim();
+            cleaned = cleaned.replace(/\btomorrow\b/i, '').trim();
+          } else if (/\btoday\b/i.test(cleaned)) {
+            cleaned = cleaned.replace(/\btoday\b/i, '').trim();
           } else if (dayMatch) {
             const targetDay = dayNames.indexOf(dayMatch[1].toLowerCase());
             const now = getEasternDate();
-            const currentDay = now.getDay();
-            let daysAhead = targetDay - currentDay;
-            if (daysAhead <= 0) daysAhead += 7; // always next occurrence
+            let daysAhead = targetDay - now.getDay();
+            if (daysAhead <= 0) daysAhead += 7;
             const target = new Date(now);
             target.setDate(now.getDate() + daysAhead);
             date = dateStr(target);
-            title = title.replace(dayMatch[0], '').trim();
+            cleaned = cleaned.replace(dayMatch[0], '').trim();
           }
 
-          const timeMatch = title.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
-          if (timeMatch) {
-            let h = parseInt(timeMatch[1]);
-            const m = parseInt(timeMatch[2] || '0');
-            const ampm = timeMatch[3].toLowerCase();
-            if (ampm === 'pm' && h !== 12) h += 12;
-            if (ampm === 'am' && h === 12) h = 0;
-            time = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
-            title = title.replace(timeMatch[0], '').trim();
+          // Parse time — handle many formats:
+          // "at 3pm", "at 3:30pm", "3pm", "15:00", "3 pm", "at 3", "@3pm"
+          const timePatterns = [
+            /\bat\s+(\d{1,2}):(\d{2})\s*(am|pm)\b/i,
+            /\bat\s+(\d{1,2})\s*(am|pm)\b/i,
+            /\b(\d{1,2}):(\d{2})\s*(am|pm)\b/i,
+            /\b(\d{1,2})\s*(am|pm)\b/i,
+            /\bat\s+(\d{1,2}):(\d{2})\b/,
+            /\b(\d{2}):(\d{2})\b/
+          ];
+
+          for (const pattern of timePatterns) {
+            const m = cleaned.match(pattern);
+            if (m) {
+              let h, min, ampm;
+              if (pattern.source.includes('am|pm')) {
+                // has am/pm
+                if (m.length === 4) { h = parseInt(m[1]); min = parseInt(m[2]); ampm = m[3]; }
+                else { h = parseInt(m[1]); min = 0; ampm = m[2]; }
+                if (ampm.toLowerCase() === 'pm' && h !== 12) h += 12;
+                if (ampm.toLowerCase() === 'am' && h === 12) h = 0;
+              } else {
+                h = parseInt(m[1]); min = parseInt(m[2] || '0');
+              }
+              time = `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
+              cleaned = cleaned.replace(m[0], '').replace(/\bat\b/gi, '').trim();
+              break;
+            }
           }
 
-          const newTask = { id: Date.now().toString(), title, type: 'once', date, time, priority: 'medium' };
-          tasks.push(newTask);
-          await saveTasksToDB();
-          await sendTelegram(`✅ Added: ${title}${time ? ' at ' + time : ''} on ${date}`);
+          // Clean up leftover punctuation/spaces
+          title = cleaned.replace(/\s+/g, ' ').replace(/^[,.\s]+|[,.\s]+$/g, '').trim();
+
+          // Validate title
+          if (!title || title.length < 2) {
+            await sendTelegram('❌ Could not parse task name. Try:\nadd wash the car friday 12pm');
+            continue;
+          }
+
+          try {
+            const newTask = { id: Date.now().toString(), title, type: 'once', date, time, priority: 'medium' };
+            tasks.push(newTask);
+            await saveTasksToDB();
+            const dayLabel = date === getTodayStr() ? 'today' : new Date(date+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+            await sendTelegram(`✅ Added: "${title}"\n📅 ${dayLabel}${time ? '\n⏰ ' + time : ''}`);
+          } catch(e) {
+            await sendTelegram('❌ Something went wrong saving the task. Please try again.');
+          }
         } else {
-          await sendTelegram('Commands:\n• list\n• done [task name]\n• add [task] today/tomorrow/saturday [3pm]');
+          await sendTelegram('Here\'s what I understand:\n\n📋 TO SEE TASKS:\nlist / tasks / today / what\'s today / show my tasks\n\n➕ TO ADD A TASK:\nadd / schedule / remind me to / book / plan / create / i need to / don\'t forget to / note to self / set a reminder to\n\nExamples:\n• schedule call with Mike tomorrow 12pm\n• remind me to pay bills friday\n• i need to go to the gym monday 7am\n• don\'t forget to call mom today\n• book dentist thursday 10am\n\n✅ TO MARK DONE:\ndone / complete / finished / i did / i finished / check off [task name]');
         }
       }
     } catch(e) {
