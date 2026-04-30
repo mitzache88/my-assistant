@@ -7,7 +7,54 @@ const CHAT_ID = process.env.CHAT_ID;
 let tasks = [];
 try { tasks = JSON.parse(process.env.TASKS || '[]'); } catch(e) {}
 
-// ── Telegram send ────────────────────────────────────────────
+const JSONBIN_ID = process.env.JSONBIN_ID;
+const JSONBIN_KEY = process.env.JSONBIN_KEY;
+
+async function loadTasksFromDB() {
+  try {
+    const data = await new Promise(resolve => {
+      const options = {
+        hostname: 'api.jsonbin.io',
+        path: `/v3/b/${JSONBIN_ID}/latest`,
+        headers: { 'X-Master-Key': JSONBIN_KEY }
+      };
+      https.get(options, res => {
+        let body = '';
+        res.on('data', d => body += d);
+        res.on('end', () => { try { resolve(JSON.parse(body)); } catch(e) { resolve(null); } });
+      }).on('error', () => resolve(null));
+    });
+    if (data && data.record && Array.isArray(data.record.tasks)) {
+      tasks = data.record.tasks;
+      console.log(`Loaded ${tasks.length} tasks from DB`);
+    }
+  } catch(e) { console.error('Load DB error:', e.message); }
+}
+
+async function saveTasksToDB() {
+  try {
+    const body = JSON.stringify({ tasks });
+    await new Promise(resolve => {
+      const options = {
+        hostname: 'api.jsonbin.io',
+        path: `/v3/b/${JSONBIN_ID}`,
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Master-Key': JSONBIN_KEY,
+          'Content-Length': Buffer.byteLength(body)
+        }
+      };
+      const req = https.request(options, res => {
+        res.on('data', ()=>{});
+        res.on('end', resolve);
+      });
+      req.on('error', resolve);
+      req.write(body); req.end();
+    });
+    console.log(`Saved ${tasks.length} tasks to DB`);
+  } catch(e) { console.error('Save DB error:', e.message); }
+}
 function sendTelegram(text) {
   const body = JSON.stringify({ chat_id: CHAT_ID, text });
   const options = {
@@ -157,6 +204,7 @@ async function startPolling() {
           if (task) {
             if (!task.doneDate) task.doneDate = {};
             task.doneDate[todayStr] = true;
+            await saveTasksToDB();
             await sendTelegram(`✅ Marked done: ${task.title}`);
           } else {
             await sendTelegram(`❌ Task not found: "${query}"`);
@@ -188,6 +236,7 @@ async function startPolling() {
 
           const newTask = { id: Date.now().toString(), title, type: 'once', date, time, priority: 'medium' };
           tasks.push(newTask);
+          await saveTasksToDB();
           await sendTelegram(`✅ Added: ${title}${time ? ' at ' + time : ''} on ${date}`);
         } else {
           await sendTelegram('Commands:\n• list\n• done [task name]\n• add [task] today/tomorrow [3pm]');
@@ -216,6 +265,7 @@ const server = http.createServer((req, res) => {
         if (Array.isArray(data.tasks)) {
           tasks = data.tasks;
           console.log(`Synced: ${tasks.length} tasks`);
+          await saveTasksToDB();
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, count: tasks.length }));
         } else { res.writeHead(400); res.end('{}'); }
@@ -237,8 +287,9 @@ const server = http.createServer((req, res) => {
 });
 
 const PORT = parseInt(process.env.PORT) || 3000;
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', async () => {
   console.log('Server running on port', PORT);
+  await loadTasksFromDB();
   startScheduler();
   startKeepAlive();
   startPolling();
