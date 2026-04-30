@@ -130,7 +130,90 @@ async function transcribeVoice(filePath) {
   });
 }
  
-// ── Date helpers ─────────────────────────────────────────────
+async function translateToEnglish(text) {
+  const body = JSON.stringify({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: 'You are a translator. Translate the following text to English. If it is already in English, return it as-is. Only return the translated text, nothing else.' },
+      { role: 'user', content: text }
+    ],
+    max_tokens: 200
+  });
+  return new Promise(resolve => {
+    const options = {
+      hostname: 'api.openai.com',
+      path: '/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_KEY}`,
+        'Content-Length': Buffer.byteLength(body)
+      }
+    };
+    const req = https.request(options, res => {
+      let data = '';
+      res.on('data', d => data += d);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data).choices[0].message.content.trim()); }
+        catch(e) { resolve(text); } // fallback to original
+      });
+    });
+    req.on('error', () => resolve(text));
+    req.write(body); req.end();
+  });
+}
+ 
+async function speakReply(text) {
+  // Strip emojis for cleaner speech
+  const clean = text.replace(/[\u{1F300}-\u{1FAFF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '').replace(/[☐✅⏰❗⚠️📋➕✔️🎉🎙️❌📅]/g, '').trim();
+  return new Promise(resolve => {
+    const body = JSON.stringify({ model: 'tts-1', voice: 'alloy', input: clean.slice(0, 4096) });
+    const options = {
+      hostname: 'api.openai.com',
+      path: '/v1/audio/speech',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_KEY}`, 'Content-Length': Buffer.byteLength(body) }
+    };
+    const tmpPath = path.join('/tmp', `reply_${Date.now()}.mp3`);
+    const file = fs.createWriteStream(tmpPath);
+    const req = https.request(options, res => {
+      res.pipe(file);
+      file.on('finish', () => { file.close(); resolve(tmpPath); });
+    });
+    req.on('error', () => resolve(null));
+    req.write(body); req.end();
+  });
+}
+ 
+async function sendVoiceReply(text) {
+  try {
+    const filePath = await speakReply(text);
+    if (!filePath) { await sendTelegram(text); return; }
+    await new Promise(resolve => {
+      const form = new FormData();
+      form.append('chat_id', CHAT_ID);
+      form.append('voice', fs.createReadStream(filePath), { filename: 'reply.mp3', contentType: 'audio/mpeg' });
+      const options = {
+        hostname: 'api.telegram.org',
+        path: `/bot${BOT_TOKEN}/sendVoice`,
+        method: 'POST',
+        headers: form.getHeaders()
+      };
+      const req = https.request(options, res => {
+        res.on('data', ()=>{});
+        res.on('end', () => { fs.unlink(filePath, ()=>{}); resolve(); });
+      });
+      req.on('error', () => resolve());
+      form.pipe(req);
+    });
+    // Also send text for reference
+    await sendTelegram(text);
+  } catch(e) {
+    console.error('TTS error:', e.message);
+    await sendTelegram(text);
+  }
+}
+ 
 function getEasternDate() {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
 }
@@ -254,9 +337,11 @@ async function startPolling() {
         const text = (msg.text || '').trim();
         const lower = text.toLowerCase();
         console.log('Incoming:', lower);
+        let isVoiceMessage = false;
  
         // Handle voice messages
         if (msg.voice || msg.audio) {
+          isVoiceMessage = true;
           const fileId = (msg.voice || msg.audio).file_id;
           await sendTelegram('🎙️ Transcribing your voice message...');
           try {
@@ -268,8 +353,9 @@ async function startPolling() {
             if (!transcribed) { await sendTelegram('❌ Could not transcribe. Please try again.'); continue; }
             console.log('Transcribed:', transcribed);
             await sendTelegram(`🎙️ I heard: "${transcribed}"`);
-            // Process transcribed text as if it was typed
-            msg.text = transcribed;
+            const translated = await translateToEnglish(transcribed);
+            console.log('Translated:', translated);
+            msg.text = translated;
           } catch(e) {
             console.error('Voice error:', e.message);
             await sendTelegram('❌ Voice processing failed. Please try again.');
@@ -278,7 +364,9 @@ async function startPolling() {
         }
  
         // Re-read text (may have been set by voice transcription)
-        const finalText = (msg.text || '').trim();
+        const rawText = (msg.text || '').trim();
+        // Translate to English if needed (works for typed Romanian/Spanish too)
+        const finalText = rawText ? await translateToEnglish(rawText) : '';
         const finalLower = finalText.toLowerCase();
  
         // Strip "hey" prefix and reprocess naturally
@@ -308,7 +396,7 @@ async function startPolling() {
               targetDate = new Date(now); targetDate.setDate(now.getDate()+da);
             }
           }
-          await sendTelegram(buildListMsgForDate(targetDate));
+          await (isVoiceMessage ? sendVoiceReply(buildListMsgForDate(targetDate)) : sendTelegram(buildListMsgForDate(targetDate)));
         } else if (/^(done|complete|completed|finish|finished|mark|checked off|check off|i (did|finished|completed|done))\s+/i.test(effectiveLower)) {
           const query = effectiveLower.replace(/^(done|complete|completed|finish|finished|mark|checked off|check off|i (did|finished|completed|done))\s+/i,'').replace(/\s+as\s+(done|complete|finished)\s*$/i,'').replace(/^(the\s+)/i,'').trim();
           const todayStr = getTodayStr();
