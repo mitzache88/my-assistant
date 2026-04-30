@@ -195,10 +195,16 @@ async function startPolling() {
         const lower = text.toLowerCase();
         console.log('Incoming:', lower);
 
-        if (/^(list|tasks|today|what('?s| is) (on my list|on the list|today|my tasks)|show( me)? (my )?(tasks|list|today)|what do i have|what('?s| is) up today|my day|agenda)(\?)?$/i.test(lower)) {
+        // Strip "hey" prefix and reprocess naturally
+        const cleanText = text.replace(/^hey[,!]?\s*/i, '').trim();
+        const cleanLower = cleanText.toLowerCase();
+        const effectiveText = cleanText;
+        const effectiveLower = cleanLower;
+
+        if (/^(list|tasks|today|what('?s| is) (on my list|on the list|today|my tasks)|show( me)? (my )?(tasks|list|today)|what do i have|what('?s| is) up today|my day|agenda)(\?)?$/i.test(effectiveLower)) {
           await sendTelegram(buildListMsg());
-        } else if (/^(done|complete|completed|finish|finished|mark|checked off|check off|i (did|finished|completed|done))\s+/i.test(lower)) {
-          const query = lower.replace(/^(done|complete|completed|finish|finished|mark|checked off|check off|i (did|finished|completed|done))\s+/i,'').replace(/\s+as\s+(done|complete|finished)\s*$/i,'').replace(/^(the\s+)/i,'').trim();
+        } else if (/^(done|complete|completed|finish|finished|mark|checked off|check off|i (did|finished|completed|done))\s+/i.test(effectiveLower)) {
+          const query = effectiveLower.replace(/^(done|complete|completed|finish|finished|mark|checked off|check off|i (did|finished|completed|done))\s+/i,'').replace(/\s+as\s+(done|complete|finished)\s*$/i,'').replace(/^(the\s+)/i,'').trim();
           const todayStr = getTodayStr();
           const task = tasks.find(t => t.title.toLowerCase().includes(query));
           if (task) {
@@ -209,8 +215,8 @@ async function startPolling() {
           } else {
             await sendTelegram(`❌ Task not found: "${query}"`);
           }
-        } else if (/^(add|schedule|remind me to|remind me|set( up| a)?|create( a)?|new task|put( in)?|i need to|don'?t forget( to)?|note( to self)?|book( a)?|plan( a)?|make( a)?|set a reminder( to)?|add a|log)\s+/i.test(lower)) {
-          const rest = text.replace(/^(add|schedule|remind me to|remind me|set( up| a)?|create( a)?|new task|put( in)?|i need to|don'?t forget( to)?|note( to self)?|book( a)?|plan( a)?|make( a)?|set a reminder( to)?|add a|log)\s+/i, '').trim();
+        } else if (/^(add|schedule|remind me to|remind me|set( up| a)?|create( a)?|new task|put( in)?|i need to|don'?t forget( to)?|note( to self)?|book( a)?|plan( a)?|make( a)?|set a reminder( to)?|add a|log)\s+/i.test(effectiveLower)) {
+          const rest = effectiveText.replace(/^(add|schedule|remind me to|remind me|set( up| a)?|create( a)?|new task|put( in)?|i need to|don'?t forget( to)?|note( to self)?|book( a)?|plan( a)?|make( a)?|set a reminder( to)?|add a|log)\s+/i, '').trim();
           if (!rest) { await sendTelegram('❌ Please include a task name.\nExample: add wash the car saturday 12pm'); continue; }
 
           let date = getTodayStr();
@@ -295,7 +301,33 @@ async function startPolling() {
             await sendTelegram('❌ Something went wrong saving the task. Please try again.');
           }
         } else {
-          await sendTelegram('Here\'s what I understand:\n\n📋 TO SEE TASKS:\nlist / tasks / today / what\'s today / show my tasks\n\n➕ TO ADD A TASK:\nadd / schedule / remind me to / book / plan / create / i need to / don\'t forget to / note to self / set a reminder to\n\nExamples:\n• schedule call with Mike tomorrow 12pm\n• remind me to pay bills friday\n• i need to go to the gym monday 7am\n• don\'t forget to call mom today\n• book dentist thursday 10am\n\n✅ TO MARK DONE:\ndone / complete / finished / i did / i finished / check off [task name]');
+          // Smart fallback: if message has date/time clue, try to schedule it anyway
+          const hasDateClue = /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|tonight)\b/i.test(effectiveLower);
+          const hasTimeClue = /\b\d{1,2}(:\d{2})?\s*(am|pm)\b/i.test(effectiveLower);
+          if (hasDateClue || hasTimeClue) {
+            let date = getTodayStr();
+            let title = effectiveText;
+            let time = null;
+            const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+            let cleaned = title.replace(/\bon\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)\b/gi,'$1').replace(/\bfor\s+(today|tomorrow)\b/gi,'$1').replace(/\b(this|next)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi,'$2');
+            const dayMatch = cleaned.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i);
+            if (/\btomorrow\b/i.test(cleaned)){const tom=getEasternDate();tom.setDate(tom.getDate()+1);date=dateStr(tom);cleaned=cleaned.replace(/\btomorrow\b/i,'').trim();}
+            else if (/\btoday\b|\btonight\b/i.test(cleaned)){cleaned=cleaned.replace(/\btoday\b|\btonight\b/gi,'').trim();}
+            else if (dayMatch){const td=dayNames.indexOf(dayMatch[1].toLowerCase());const now=getEasternDate();let da=td-now.getDay();if(da<=0)da+=7;const t=new Date(now);t.setDate(now.getDate()+da);date=dateStr(t);cleaned=cleaned.replace(dayMatch[0],'').trim();}
+            const timePatterns=[/\bat\s+(\d{1,2}):(\d{2})\s*(am|pm)\b/i,/\bat\s+(\d{1,2})\s*(am|pm)\b/i,/\b(\d{1,2}):(\d{2})\s*(am|pm)\b/i,/\b(\d{1,2})\s*(am|pm)\b/i];
+            for(const p of timePatterns){const m=cleaned.match(p);if(m){let h=parseInt(m[1]),min=parseInt(m[2]||'0'),ap=(m[3]||m[2]||'').toLowerCase();if(ap==='pm'&&h!==12)h+=12;if(ap==='am'&&h===12)h=0;time=`${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;cleaned=cleaned.replace(m[0],'').replace(/\bat\b/gi,'').trim();break;}}
+            title=cleaned.replace(/\s+/g,' ').replace(/^[,.\s]+|[,.\s]+$/g,'').trim();
+            if(title&&title.length>=2){
+              const newTask={id:Date.now().toString(),title,type:'once',date,time,priority:'medium'};
+              tasks.push(newTask);await saveTasksToDB();
+              const dayLabel=date===getTodayStr()?'today':new Date(date+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+              await sendTelegram(`✅ Added: "${title}"\n📅 ${dayLabel}${time?'\n⏰ '+time:''}`);
+            } else {
+              await sendTelegram('Here\'s what I understand:\n\n📋 TO SEE TASKS:\nlist / tasks / today\n\n➕ TO ADD A TASK:\nadd / schedule / remind me to / book / plan / create / i need to / don\'t forget to / note to self / hey [task]\n\nExamples:\n• hey call Mike tomorrow 12pm\n• schedule dentist thursday 10am\n• remind me to pay bills friday\n• i need to go to the gym monday 7am\n\n✅ TO MARK DONE:\ndone / finished / i did [task name]');
+            }
+          } else {
+            await sendTelegram('Here\'s what I understand:\n\n📋 TO SEE TASKS:\nlist / tasks / today\n\n➕ TO ADD A TASK:\nadd / schedule / remind me to / book / plan / create / i need to / don\'t forget to / note to self / hey [task]\n\nExamples:\n• hey call Mike tomorrow 12pm\n• schedule dentist thursday 10am\n• remind me to pay bills friday\n• i need to go to the gym monday 7am\n\n✅ TO MARK DONE:\ndone / finished / i did [task name]');
+          }
         }
       }
     } catch(e) {
