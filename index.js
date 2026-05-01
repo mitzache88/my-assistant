@@ -576,12 +576,14 @@ async function startPolling() {
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Audio-Ext');
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
 
-  let body = '';
-  req.on('data', c => body += c);
+  const chunks = [];
+  req.on('data', c => chunks.push(c));
   req.on('end', async () => {
+    const bodyBuf = Buffer.concat(chunks);
+    const body = bodyBuf.toString('utf8');
     if (req.method === 'POST' && req.url === '/sync') {
       try {
         const data = JSON.parse(body);
@@ -634,6 +636,84 @@ const server = http.createServer((req, res) => {
         console.error('AI error:', e.message);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, reply: "Sorry, couldn't connect. Try again!" }));
+      }
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/voice') {
+      try {
+        // Receive raw audio body
+        const chunks = [];
+        // body already collected above, but for binary we need raw
+        // We'll use a different approach - re-read from buffer
+        const ext = req.headers['x-audio-ext'] || 'webm';
+        const tmpPath = path.join('/tmp', `voice_${Date.now()}.${ext}`);
+        fs.writeFileSync(tmpPath, bodyBuf);
+
+        // Transcribe
+        const transcribed = await transcribeVoice(tmpPath);
+        fs.unlink(tmpPath, () => {});
+
+        if (!transcribed) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, reply: '❌ Could not transcribe. Try again.' }));
+          return;
+        }
+
+        console.log('App voice transcribed:', transcribed);
+        const translated = await translateToEnglish(transcribed);
+        console.log('App voice translated:', translated);
+
+        // Process command same as Telegram (reuse logic via fake msg object)
+        const fakeText = translated.trim();
+        const effectiveLower = fakeText.toLowerCase().replace(/^hey[,!]?\s*/i, '');
+        const effectiveText = fakeText.replace(/^hey[,!]?\s*/i, '').trim();
+
+        let replyText = '';
+        const setReply = (t) => { replyText = t; lastBotReply = { text: t, timestamp: Date.now() }; };
+
+        // Schedule/list query
+        const scheduleQuery = /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.*\b(tasks?|schedule|list|agenda|plan)\b|\b(tasks?|schedule|list|agenda|what do i have)\b/i.test(effectiveLower)
+          || /^(today|tomorrow|list|tasks|schedule)[\?]?$/i.test(effectiveLower.trim());
+
+        if (scheduleQuery) {
+          const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+          let targetDate = getEasternDate();
+          if (/tomorrow/i.test(effectiveLower)) targetDate.setDate(targetDate.getDate()+1);
+          else {
+            const dm = effectiveLower.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
+            if (dm) { const td=dayNames.indexOf(dm[1].toLowerCase());const now=getEasternDate();let da=td-now.getDay();if(da<0)da+=7;targetDate=new Date(now);targetDate.setDate(now.getDate()+da); }
+          }
+          setReply(buildListMsgForDate(targetDate));
+        } else if (/^(done|complete|finish|finished|i did|i finished|i completed|mark)\s+/i.test(effectiveLower)) {
+          const query = effectiveLower.replace(/^(done|complete|finish|finished|i did|i finished|i completed|mark)\s+/i,'').replace(/\s+as\s+(done|complete)$/i,'').trim();
+          const task = tasks.find(t => t.title.toLowerCase().includes(query));
+          if (task) { if(!task.doneDate)task.doneDate={};task.doneDate[getTodayStr()]=true;await saveTasksToDB();setReply(`✅ Marked done: ${task.title}`); }
+          else setReply(`❌ Task not found: "${query}"`);
+        } else if (/^(add|schedule|remind me to|remind me|create|i need to|book|plan|don'?t forget|note to self)\s+/i.test(effectiveLower) || /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(effectiveLower)) {
+          let date = getTodayStr(), title = effectiveText, time = null;
+          const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+          let cleaned = title.replace(/^(add|schedule|remind me to|remind me|create|i need to|book|plan|don'?t forget to?|note to self)\s+/i,'').replace(/\bon\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)\b/gi,'$1').replace(/\bfor\s+(today|tomorrow)\b/gi,'$1').trim();
+          if (/\btomorrow\b/i.test(cleaned)){const t=getEasternDate();t.setDate(t.getDate()+1);date=dateStr(t);cleaned=cleaned.replace(/\btomorrow\b/i,'').trim();}
+          else if (/\btoday\b/i.test(cleaned)){cleaned=cleaned.replace(/\btoday\b/i,'').trim();}
+          else {const dm=cleaned.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i);if(dm){const td=dayNames.indexOf(dm[1].toLowerCase());const now=getEasternDate();let da=td-now.getDay();if(da<=0)da+=7;const t=new Date(now);t.setDate(now.getDate()+da);date=dateStr(t);cleaned=cleaned.replace(dm[0],'').trim();}}
+          const timePatterns=[/\bat\s+(\d{1,2}):(\d{2})\s*(am|pm)\b/i,/\bat\s+(\d{1,2})\s*(am|pm)\b/i,/\b(\d{1,2}):(\d{2})\s*(am|pm)\b/i,/\b(\d{1,2})\s*(am|pm)\b/i];
+          for(const p of timePatterns){const m=cleaned.match(p);if(m){let h=parseInt(m[1]),mn=parseInt(m[2]||'0'),ap=(m[3]||m[2]||'').toLowerCase();if(ap==='pm'&&h!==12)h+=12;if(ap==='am'&&h===12)h=0;time=`${String(h).padStart(2,'0')}:${String(mn).padStart(2,'0')}`;cleaned=cleaned.replace(m[0],'').replace(/\bat\b/gi,'').trim();break;}}
+          title=cleaned.replace(/\s+/g,' ').replace(/^[,.\s]+|[,.\s]+$/g,'').trim();
+          if(title&&title.length>=2){const newTask={id:Date.now().toString(),title,type:'once',date,time,priority:'medium'};tasks.push(newTask);await saveTasksToDB();const dayLabel=date===getTodayStr()?'today':new Date(date+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});setReply(`✅ Added: "${title}"\n📅 ${dayLabel}${time?'\n⏰ '+time:''}`);}
+          else setReply(`I heard: "${transcribed}"\nTry: "add call Mike tomorrow 3pm"`);
+        } else {
+          setReply(`I heard: "${transcribed}"\n\nTry saying:\n• "What's on my schedule today?"\n• "Add call Mike tomorrow 3pm"\n• "Done gym"`);
+        }
+
+        // Also send to Telegram so it shows up there
+        await sendTelegram(`🎙️ "${transcribed}"\n\n${replyText}`);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, reply: replyText, transcript: transcribed }));
+      } catch(e) {
+        console.error('Voice endpoint error:', e.message);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, reply: '❌ Voice processing failed. Try again.' }));
       }
       return;
     }
