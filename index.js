@@ -690,7 +690,7 @@ async function startPolling() {
             let msg = `✅ "${taskTitle}"\n📅 ${rDay}`;
             if (hasPending()) {
               const next = pendingQuestion();
-              msg += `\n\n📅 When is "${next.eventPhrase||next.name}"?`;
+              msg += `\nWhen is ${next.eventPhrase||next.name}?`;
             }
             await reply(msg, isVoiceMessage);
           } else {
@@ -730,7 +730,7 @@ async function startPolling() {
             let bdayMsg = `🎂 Got it! ${name}'s birthday is ${bday}.\n✅ Reminder set: "${task.title}"\n📅 ${rDay}`;
             if (hasPending()) {
               const next = pendingQuestion();
-              bdayMsg += `\n\n📅 When is "${next.eventPhrase||next.name}"?`;
+              bdayMsg += `\nWhen is ${next.eventPhrase||next.name}?`;
             }
             await reply(bdayMsg, isVoiceMessage);
           } else {
@@ -757,7 +757,7 @@ async function startPolling() {
             await reply(`✅ Reminder set: "${task.title}"\n📅 ${rDay}\n🎂 ${name}'s birthday: ${bday}`, isVoiceMessage);
           } else {
             setPending({ type: 'birthday', name, days: rDays, reminderTitle });
-            await reply(`🎂 When is "${name}"'s birthday?`, isVoiceMessage);
+            await reply(`When is ${name}'s birthday?`, isVoiceMessage);
           }
           continue;
         }
@@ -1044,7 +1044,7 @@ const server = http.createServer((req, res) => {
             const now = getEasternDate();
             if (anchor < now) {
               setPending({ type:'event', eventPhrase, days, direction, taskTitle });
-              await reply(`⚠️ That date has passed. When is the new date for "${eventPhrase}"?`, isVoiceMessage);
+              await reply(`When is ${eventPhrase}?`, isVoiceMessage);
             } else {
               const newTask = {id:Date.now().toString(),title:taskTitle,type:'once',date:dateStr(anchor),time:null,priority:'medium'};
               tasks.push(newTask); await saveTasksToDB();
@@ -1053,7 +1053,7 @@ const server = http.createServer((req, res) => {
             }
           } else {
             setPending({ type:'event', eventPhrase, days, direction, taskTitle });
-            await reply(`📅 When is "${eventPhrase}"?`, isVoiceMessage);
+            await reply(`When is ${eventPhrase}?`, isVoiceMessage);
           }
           await sendTelegram(`🎙️ "${transcribed}"\n\n${replyText}`);
           res.writeHead(200,{'Content-Type':'application/json'});
@@ -1078,7 +1078,7 @@ const server = http.createServer((req, res) => {
             setReply(`✅ Reminder: "${task.title}"\n📅 ${rDay}\n🎂 ${name}'s birthday: ${bday}`);
           } else {
             setPending({ type: 'birthday', name, days: rDays, reminderTitle });
-            setReply(`🎂 When is "${name}"'s birthday?`);
+            setReply(`When is ${name}'s birthday?`);
           }
           await sendTelegram(`🎙️ "${transcribed}"\n\n${replyText}`);
           res.writeHead(200,{'Content-Type':'application/json'});
