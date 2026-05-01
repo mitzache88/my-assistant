@@ -946,6 +946,35 @@ const server = http.createServer((req, res) => {
       }
       return;
     }
+    if (req.method === 'POST' && req.url === '/birthday') {
+      try {
+        const data = JSON.parse(body);
+        const { name, mmdd } = data; // mmdd = "MM-DD"
+        if (!name || !mmdd) { res.writeHead(400); res.end('{}'); return; }
+        // Save person
+        people[name.toLowerCase()] = { name, birthday: mmdd };
+        // Find pending question for this person if any
+        const pq = pendingQuestion && pendingQuestion.type === 'birthday' && pendingQuestion.name.toLowerCase() === name.toLowerCase() ? pendingQuestion : null;
+        const rDays = pq ? pq.days : 1;
+        const reminderTitle = pq ? pq.reminderTitle : `${name}'s birthday reminder`;
+        pendingQuestion = null;
+        // Schedule reminder
+        const { task, birthdayDate } = scheduleBirthdayReminder(name, mmdd, rDays, reminderTitle);
+        await saveTasksToDB();
+        const bday = new Date(birthdayDate+'T12:00').toLocaleDateString('en-US',{month:'long',day:'numeric'});
+        const rDay = new Date(task.date+'T12:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+        const reply = `🎂 Got it! ${name}'s birthday is ${bday}.\n✅ Reminder set: "${task.title}"\n📅 ${rDay}`;
+        lastBotReply = { text: reply, timestamp: Date.now() };
+        await sendTelegram(reply);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, reply }));
+      } catch(e) {
+        console.error('Birthday error:', e.message);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, reply: '❌ Could not save birthday.' }));
+      }
+      return;
+    }
     if (req.method === 'GET' && req.url.startsWith('/lastReply')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, ...lastBotReply }));
