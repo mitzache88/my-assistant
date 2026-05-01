@@ -597,17 +597,60 @@ function parseBirthdayReminder(text) {
 
 function resolvePersonName(raw, fullText) {
   const r = raw.toLowerCase().trim();
-  if (r === 'my' || r === 'his' || r === 'her') {
-    const rel = fullText.match(/my\s+([\w]+(?:\s+[\w]+)?)/i);
-    if (rel) return rel[1].charAt(0).toUpperCase() + rel[1].slice(1);
+  // If pronoun, extract the actual person from the full text
+  if (/^(my|his|her|their|its)$/.test(r) || r === '') {
+    // First look for a proper name (capitalized word that's not a command word)
+    const nameMatch = fullText.match(/\b(?:call|text|visit|see|meet|remind|contact)\s+([A-Z][a-z]+)\b/);
+    if (nameMatch) return nameMatch[1];
+    // Look for relation words anywhere in the text
+    const relationMatch = fullText.match(/\b(mom|mother|mama|mum|dad|father|papa|pop|brother|sister|wife|husband|girlfriend|boyfriend|partner|son|daughter|grandma|grandmother|grandpa|grandfather|aunt|uncle|cousin|friend|boss|colleague)\b/i);
+    if (relationMatch) return resolvePersonName(relationMatch[1], fullText);
+    // Look for "my X"
+    const myMatch = fullText.match(/\bmy\s+([\w]+)/i);
+    if (myMatch) return resolvePersonName(myMatch[1], fullText);
     return 'them';
   }
   if (/^(mom|mother|mama|mum)$/i.test(r)) return 'Mom';
   if (/^(dad|father|papa|pop)$/i.test(r)) return 'Dad';
-  if (/^(wife|husband|partner|girlfriend|boyfriend|spouse)$/i.test(r)) return raw.charAt(0).toUpperCase()+raw.slice(1);
-  return raw.charAt(0).toUpperCase() + raw.slice(1);
+  if (/^(brother)$/i.test(r)) return 'Brother';
+  if (/^(sister)$/i.test(r)) return 'Sister';
+  if (/^(wife)$/i.test(r)) return 'Wife';
+  if (/^(husband)$/i.test(r)) return 'Husband';
+  if (/^(son)$/i.test(r)) return 'Son';
+  if (/^(daughter)$/i.test(r)) return 'Daughter';
+  if (/^(grandma|grandmother)$/i.test(r)) return 'Grandma';
+  if (/^(grandpa|grandfather)$/i.test(r)) return 'Grandpa';
+  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
 }
 
+
+// Extract clean task title from a "remind me to X [timing]" command
+function extractTaskTitle(text, name) {
+  let t = text
+    .replace(/^(remind me to|remind me|please remind me to|can you remind me to)\s*/i, '')
+    .trim();
+  // Remove all timing/birthday/event clauses from the END of the string
+  t = t
+    .replace(/\s+\d+\s+days?\s+(before|after)\s+.*$/i, '')
+    .replace(/\s+the\s+day\s+(before|after)\s+.*$/i, '')
+    .replace(/\s+on\s+(his|her|their|my|our)\s+birthday.*$/i, '')
+    .replace(/\s+on\s+\w+['']?s?\s+birthday.*$/i, '')
+    .replace(/\s+for\s+\w+['']?s?\s+birthday.*$/i, '')
+    .replace(/\s+at\s+(his|her|their|my)\s+birthday.*$/i, '')
+    .replace(/\s+when\s+.*$/i, '')
+    .replace(/\s+before\s+.*$/i, '')
+    .replace(/\s+after\s+.*$/i, '')
+    .replace(/[.\s]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // If stripping left nothing meaningful, build a default
+  if (!t || t.length < 2) t = name ? `Call ${name}` : 'Reminder';
+  // Replace generic pronouns with actual name
+  if (name && name !== 'them') {
+    t = t.replace(/\b(him|her|them|my mom|my dad|my brother|my sister)\b/gi, name);
+  }
+  return t;
+}
 
 async function startPolling() {
   console.log('Starting Telegram polling...');
@@ -745,10 +788,7 @@ async function startPolling() {
         if (bdayReminder) {
           const { name, days: rDays } = bdayReminder;
           const nameKey = name.toLowerCase();
-          const reminderTitle = effectiveText.replace(/remind me to|remind me/i,'')
-            .replace(new RegExp(`(?:\\d+\\s+days?\\s+(?:before|after)|the\\s+day\\s+before|on)\\s+${name}'?s?\\s+birthday`, 'i'), '')
-            .replace(/birthday/i,'').replace(/\s+/g,' ').trim()
-            || (rDays===0 ? `${name}'s birthday` : `Reminder for ${name}'s birthday`);
+          const reminderTitle = extractTaskTitle(effectiveText, name);
           if (people[nameKey] && people[nameKey].birthday) {
             const { task, birthdayDate } = scheduleBirthdayReminder(name, people[nameKey].birthday, rDays, reminderTitle);
             await saveTasksToDB();
@@ -1066,10 +1106,7 @@ const server = http.createServer((req, res) => {
         if (bdayReminder) {
           const { name, days: rDays } = bdayReminder;
           const nameKey = name.toLowerCase();
-          const reminderTitle = effectiveText.replace(/remind me to|remind me/i,'')
-            .replace(new RegExp(`(?:\\d+\\s+days?\\s+(?:before|after)|the\\s+day\\s+before|on)\\s+${name}'?s?\\s+birthday`, 'i'), '')
-            .replace(/birthday/i,'').replace(/\s+/g,' ').trim()
-            || (rDays===0 ? `${name}'s birthday` : `Reminder for ${name}'s birthday`);
+          const reminderTitle = extractTaskTitle(effectiveText, name);
           if (people[nameKey] && people[nameKey].birthday) {
             const { task, birthdayDate } = scheduleBirthdayReminder(name, people[nameKey].birthday, rDays, reminderTitle);
             await saveTasksToDB();
