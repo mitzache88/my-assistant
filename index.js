@@ -353,22 +353,20 @@ async function startPolling() {
         if (msg.voice || msg.audio) {
           isVoiceMessage = true;
           const fileId = (msg.voice || msg.audio).file_id;
-          await sendTelegram('🎙️ Transcribing your voice message...');
           try {
             const fileUrl = await getTelegramFileUrl(fileId);
-            if (!fileUrl) { await sendTelegram('❌ Could not download voice message. Try again.'); continue; }
+            if (!fileUrl) { await reply('❌ Could not download voice message. Try again.', false); continue; }
             const filePath = await downloadFile(fileUrl);
             const transcribed = await transcribeVoice(filePath);
             fs.unlink(filePath, ()=>{});
-            if (!transcribed) { await sendTelegram('❌ Could not transcribe. Please try again.'); continue; }
+            if (!transcribed) { await reply('❌ Could not transcribe. Please try again.', false); continue; }
             console.log('Transcribed:', transcribed);
-            await sendTelegram(`🎙️ I heard: "${transcribed}"`);
             const translated = await translateToEnglish(transcribed);
             console.log('Translated:', translated);
             msg.text = translated;
           } catch(e) {
             console.error('Voice error:', e.message);
-            await sendTelegram('❌ Voice processing failed. Please try again.');
+            await reply('❌ Voice processing failed. Please try again.', false);
             continue;
           }
         }
@@ -532,7 +530,7 @@ async function startPolling() {
             tasks.push(newTask);
             await saveTasksToDB();
             const dayLabel = date === getTodayStr() ? 'today' : new Date(date+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
-            await reply(`✅ Added: "${title}"\n📅 ${dayLabel}${time ? '\n⏰ ' + time : ''}`);
+            await reply(`✅ Added: "${title}"\n📅 ${dayLabel}${time ? '\n⏰ ' + time : ''}`, isVoiceMessage);
           } catch(e) {
             await reply('❌ Something went wrong saving the task. Please try again.');
           }
