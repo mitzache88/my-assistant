@@ -1070,6 +1070,22 @@ const server = http.createServer((req, res) => {
         let replyText = '';
         const setReply = (t) => { replyText = t; lastBotReply = { text: t, timestamp: Date.now() }; };
 
+        // ── FORGET PERSON (update birthday/event) ──
+        // "forget mom's birthday" / "update mom's birthday" / "change mom's birthday"
+        const forgetM = effectiveLower.match(/^(forget|delete|remove|update|change|reset)\s+([\w\s]+?)(?:'?s?)?\s+birthday/i);
+        if (forgetM) {
+          const rawName = forgetM[2].trim();
+          const name = resolvePersonName(rawName, effectiveText);
+          const key = name.toLowerCase();
+          if (people[key]) { delete people[key]; await saveTasksToDB(); }
+          setPending({ type: 'birthday', name, days: 0, reminderTitle: `${name}'s birthday` });
+          setReply(`When is ${name}'s birthday?`);
+          await sendTelegram(`🎙️ "${transcribed}"\n\n${replyText}`);
+          res.writeHead(200,{'Content-Type':'application/json'});
+          res.end(JSON.stringify({ok:true,reply:replyText,transcript:transcribed}));
+          return;
+        }
+
         // ── GENERAL EVENT REMINDER ──
         const eventReminder = parseEventReminder(effectiveText);
         if (eventReminder) {
@@ -1101,7 +1117,19 @@ const server = http.createServer((req, res) => {
           return;
         }
 
-        // ── BIRTHDAY REMINDER ──
+        // ── FORGET PERSON ──
+        const forgetV = effectiveLower.match(/^(forget|delete|remove|update|change|reset)\s+([\w\s]+?)(?:'?s?)?\s+birthday/i);
+        if (forgetV) {
+          const name = resolvePersonName(forgetV[2].trim(), effectiveText);
+          const key = name.toLowerCase();
+          if (people[key]) { delete people[key]; await saveTasksToDB(); }
+          setPending({ type: 'birthday', name, days: 0, reminderTitle: `${name}'s birthday` });
+          setReply(`When is ${name}'s birthday?`);
+          await sendTelegram(`🎙️ "${transcribed}"\n\n${replyText}`);
+          res.writeHead(200,{'Content-Type':'application/json'});
+          res.end(JSON.stringify({ok:true,reply:replyText,transcript:transcribed}));
+          return;
+        }
         const bdayReminder = parseBirthdayReminder(effectiveText);
         if (bdayReminder) {
           const { name, days: rDays } = bdayReminder;
@@ -1221,6 +1249,30 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, reply: '❌ Could not save.' }));
       }
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/clearPerson') {
+      try {
+        const data = JSON.parse(body);
+        const key = (data.name || '').toLowerCase();
+        if (key && people[key]) {
+          delete people[key];
+          await saveTasksToDB();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, reply: `Cleared ${data.name}` }));
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, reply: 'Not found' }));
+        }
+      } catch(e) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false }));
+      }
+      return;
+    }
+    if (req.method === 'GET' && req.url === '/people') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, people }));
       return;
     }
     if (req.method === 'GET' && req.url.startsWith('/lastReply')) {
