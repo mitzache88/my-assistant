@@ -10,7 +10,11 @@ const OPENAI_KEY = process.env.OPENAI_KEY;
 
 let tasks = [];
 let people = {}; // { "andreea": { birthday: "05-15" } }  MM-DD format
-let pendingQuestion = null; // { type: 'birthday', name, reminderDays, reminderTitle }
+let pendingQueue = []; // queue of pending questions
+function pendingQuestion() { return pendingQueue[0] || null; }
+function setPending(q) { pendingQueue.push(q); }
+function clearPending() { pendingQueue.shift(); }
+function hasPending() { return pendingQueue.length > 0; }
 
 try { tasks = JSON.parse(process.env.TASKS || '[]'); } catch(e) {}
 
@@ -671,27 +675,31 @@ async function startPolling() {
         const effectiveLower = cleanLower;
 
         // ── PENDING QUESTION HANDLER ──
-        if (pendingQuestion && pendingQuestion.type === 'event') {
-          // User is answering "when is [event]?"
+        if (pendingQuestion() && pendingQuestion().type === 'event') {
           const { date: eventDate, found } = parseNaturalDate(finalText.trim());
           if (found) {
-            const { eventPhrase, days, direction, taskTitle } = pendingQuestion;
+            const { eventPhrase, days, direction, taskTitle } = pendingQuestion();
             people[eventPhrase.toLowerCase()] = { eventDate };
             const anchor = new Date(eventDate+'T12:00');
             anchor.setDate(anchor.getDate() + direction * days);
             const newTask = {id:Date.now().toString(),title:taskTitle,type:'once',date:dateStr(anchor),time:null,priority:'medium'};
             tasks.push(newTask); await saveTasksToDB();
-            pendingQuestion = null;
+            clearPending();
             const dirLabel = direction===-1?(days===1?'the day before':days+' days before'):direction===1?(days===1?'the day after':days+' days after'):'on';
             const rDay = anchor.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
-            await reply(`✅ "${taskTitle}"\n📅 ${rDay}\n📌 ${dirLabel} "${eventPhrase}"`, isVoiceMessage);
+            let msg = `✅ "${taskTitle}"\n📅 ${rDay}`;
+            if (hasPending()) {
+              const next = pendingQuestion();
+              msg += `\n\n📅 When is "${next.eventPhrase||next.name}"?`;
+            }
+            await reply(msg, isVoiceMessage);
           } else {
-            await reply(`I didn't catch that date. Try "May 15", "next Friday", or "June 3rd".`, isVoiceMessage);
+            await reply(`I didn't catch that. Try "May 15" or "next Friday".`, isVoiceMessage);
           }
           continue;
         }
 
-        if (pendingQuestion && pendingQuestion.type === 'birthday') {
+        if (pendingQuestion() && pendingQuestion().type === 'birthday') {
           const answer = finalText.trim();
           // Try to parse a date from the answer (e.g. "May 15", "15th of May", "05/15")
           let mmdd = null;
@@ -716,12 +724,17 @@ async function startPolling() {
             people[name.toLowerCase()] = { name, birthday: mmdd };
             const { task, birthdayDate } = scheduleBirthdayReminder(name, mmdd, rDays, reminderTitle);
             await saveTasksToDB();
-            pendingQuestion = null;
+            clearPending();
             const bday = new Date(birthdayDate+'T12:00').toLocaleDateString('en-US',{month:'long',day:'numeric'});
             const rDay = new Date(task.date+'T12:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
-            await reply(`🎂 Got it! ${name}'s birthday is ${bday}.\n✅ Reminder set: "${task.title}"\n📅 ${rDay}`, isVoiceMessage);
+            let bdayMsg = `🎂 Got it! ${name}'s birthday is ${bday}.\n✅ Reminder set: "${task.title}"\n📅 ${rDay}`;
+            if (hasPending()) {
+              const next = pendingQuestion();
+              bdayMsg += `\n\n📅 When is "${next.eventPhrase||next.name}"?`;
+            }
+            await reply(bdayMsg, isVoiceMessage);
           } else {
-            await reply(`I didn't catch that date. Try something like "May 15" or "15th of May".`, isVoiceMessage);
+            await reply(`I didn't catch that date. Try "May 15" or "15th of May".`, isVoiceMessage);
           }
           continue;
         }
@@ -743,8 +756,8 @@ async function startPolling() {
             const rDay = new Date(task.date+'T12:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
             await reply(`✅ Reminder set: "${task.title}"\n📅 ${rDay}\n🎂 ${name}'s birthday: ${bday}`, isVoiceMessage);
           } else {
-            pendingQuestion = { type: 'birthday', name, days: rDays, reminderTitle };
-            await reply(`🎂 When is ${name}'s birthday?`, isVoiceMessage);
+            setPending({ type: 'birthday', name, days: rDays, reminderTitle });
+            await reply(`🎂 When is "${name}"'s birthday?`, isVoiceMessage);
           }
           continue;
         }
@@ -866,7 +879,7 @@ async function startPolling() {
 
           // No date found — ask instead of defaulting to today
           if (!dateFound) {
-            pendingQuestion = { type: 'date', title, time };
+            setPending({ type: 'date', title, time });
             await reply(`📅 What date is "${title}" for?\nReply with something like "May 15" or "next Friday".`, isVoiceMessage);
             continue;
           }
@@ -1030,7 +1043,7 @@ const server = http.createServer((req, res) => {
             anchor.setDate(anchor.getDate() + direction * days);
             const now = getEasternDate();
             if (anchor < now) {
-              pendingQuestion = { type:'event', eventPhrase, days, direction, taskTitle };
+              setPending({ type:'event', eventPhrase, days, direction, taskTitle });
               await reply(`⚠️ That date has passed. When is the new date for "${eventPhrase}"?`, isVoiceMessage);
             } else {
               const newTask = {id:Date.now().toString(),title:taskTitle,type:'once',date:dateStr(anchor),time:null,priority:'medium'};
@@ -1039,7 +1052,7 @@ const server = http.createServer((req, res) => {
               await reply(`✅ "${taskTitle}"\n📅 ${rDay}`, isVoiceMessage);
             }
           } else {
-            pendingQuestion = { type:'event', eventPhrase, days, direction, taskTitle };
+            setPending({ type:'event', eventPhrase, days, direction, taskTitle });
             await reply(`📅 When is "${eventPhrase}"?`, isVoiceMessage);
           }
           await sendTelegram(`🎙️ "${transcribed}"\n\n${replyText}`);
@@ -1064,8 +1077,8 @@ const server = http.createServer((req, res) => {
             const rDay = new Date(task.date+'T12:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
             setReply(`✅ Reminder: "${task.title}"\n📅 ${rDay}\n🎂 ${name}'s birthday: ${bday}`);
           } else {
-            pendingQuestion = { type: 'birthday', name, days: rDays, reminderTitle };
-            setReply(`🎂 When is ${name}'s birthday?`);
+            setPending({ type: 'birthday', name, days: rDays, reminderTitle });
+            setReply(`🎂 When is "${name}"'s birthday?`);
           }
           await sendTelegram(`🎙️ "${transcribed}"\n\n${replyText}`);
           res.writeHead(200,{'Content-Type':'application/json'});
@@ -1102,7 +1115,7 @@ const server = http.createServer((req, res) => {
           title=cleaned.replace(/\s+/g,' ').replace(/^[,.\s]+|[,.\s]+$/g,'').trim();
           if(!dateFound && title && title.length>=2){
             // No date found — ask
-            pendingQuestion={type:'date',title,time,originalText:transcribed};
+            setPending({type:'date',title,time,originalText:transcribed});
             setReply(`📅 What date is "${title}" for?\nReply with a date like "May 15" or "next Friday".`);
           } else if(title&&title.length>=2){const newTask={id:Date.now().toString(),title,type:'once',date,time,priority:'medium'};tasks.push(newTask);await saveTasksToDB();const dayLabel=date===getTodayStr()?'today':new Date(date+'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});setReply(`✅ Added: "${title}"\n📅 ${dayLabel}${time?'\n⏰ '+time:''}`);}
           else setReply(`I heard: "${transcribed}"\nTry: "add call Mike tomorrow 3pm"`);
@@ -1131,8 +1144,8 @@ const server = http.createServer((req, res) => {
         if (eventPhrase && eventDate) {
           const eventKey = eventPhrase.toLowerCase();
           people[eventKey] = { eventDate };
-          const pq = pendingQuestion && pendingQuestion.type === 'event' ? pendingQuestion : null;
-          pendingQuestion = null;
+          const pq = pendingQuestion && pendingQuestion().type === 'event' ? pendingQuestion : null;
+          clearPending();
           let replyText = `📅 Got it! "${eventPhrase}" is on ${eventDate}.`;
           if (pq) {
             const { date: eDate } = parseNaturalDate(eventDate);
@@ -1153,10 +1166,10 @@ const server = http.createServer((req, res) => {
         // Birthday
         if (!name || !mmdd) { res.writeHead(400); res.end('{}'); return; }
         people[name.toLowerCase()] = { name, birthday: mmdd };
-        const pq = pendingQuestion && pendingQuestion.type === 'birthday' && pendingQuestion.name.toLowerCase() === name.toLowerCase() ? pendingQuestion : null;
+        const pq = pendingQuestion && pendingQuestion().type === 'birthday' && pendingQuestion().name.toLowerCase() === name.toLowerCase() ? pendingQuestion : null;
         const rDays = pq ? pq.days : 1;
         const reminderTitle = pq ? pq.reminderTitle : `${name}'s birthday reminder`;
-        pendingQuestion = null;
+        clearPending();
         const { task, birthdayDate } = scheduleBirthdayReminder(name, mmdd, rDays, reminderTitle);
         await saveTasksToDB();
         const bday = new Date(birthdayDate+'T12:00').toLocaleDateString('en-US',{month:'long',day:'numeric'});
