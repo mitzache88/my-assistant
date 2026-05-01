@@ -495,15 +495,115 @@ function scheduleBirthdayReminder(name, mmdd, reminderDays, reminderTitle) {
 }
 
 // Detect "X days before [name]'s birthday" pattern
-function parseBirthdayReminder(text) {
-  const m = text.match(/(?:(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+days?\s+before|the\s+day\s+before)\s+(\w+)(?:'s|s')?\s+birthday/i);
-  if (!m) return null;
-  const wordNums = {one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
-  const numStr = m[1] || '1';
-  const days = wordNums[numStr?.toLowerCase()] ?? (parseInt(numStr)||1);
-  const name = m[2];
-  return { name, days };
+// ── GENERAL EVENT REMINDER PARSER ──
+// Handles: "X days before/after/on [event]", "the day of [event]", "when [person] arrives/lands/gets back"
+function parseEventReminder(text) {
+  const wordNums = {one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10,
+    eleven:11,twelve:12,fifteen:15,twenty:20};
+
+  // Extract offset and direction first
+  let days = 0;
+  let direction = 0; // -1 = before, 0 = on, 1 = after
+  let eventPhrase = null;
+  let taskPart = text;
+
+  // Patterns:
+  // "X days before [event]"
+  // "X days after [event]"
+  // "the day before/after [event]"
+  // "on the day of [event]" / "on [event]"
+  // "when [person] [verb]s" → event = "[person] [verb]s"
+
+  const beforePat = /\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty)\s+days?\s+before\s+(.+?)(?:\s*$)/i;
+  const afterPat  = /\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty)\s+days?\s+after\s+(.+?)(?:\s*$)/i;
+  const dayBefore = /\bthe\s+day\s+before\s+(.+?)(?:\s*$)/i;
+  const dayAfter  = /\bthe\s+day\s+after\s+(.+?)(?:\s*$)/i;
+  const onEvent   = /\b(?:on\s+(?:the\s+day\s+of\s+)?|for\s+)(.+?)(?:'s\s+\w+|\s*$)/i;
+  const whenPat   = /\bwhen\s+(.+?)(?:\s+(?:arrives?|lands?|gets?\s+back|comes?\s+back|returns?|is\s+back|gets?\s+here|shows?\s+up|starts?|begins?|happens?|is\s+done|finishes?|ends?))(?:\s*$)/i;
+  const atEvent   = /\bat\s+(?:the\s+)?(.+?)(?:\s*$)/i;
+
+  let m;
+
+  if ((m = text.match(beforePat))) {
+    const numStr = m[1].toLowerCase();
+    days = wordNums[numStr] ?? parseInt(numStr) ?? 1;
+    direction = -1;
+    eventPhrase = m[2].trim();
+  } else if ((m = text.match(afterPat))) {
+    const numStr = m[1].toLowerCase();
+    days = wordNums[numStr] ?? parseInt(numStr) ?? 1;
+    direction = 1;
+    eventPhrase = m[2].trim();
+  } else if ((m = text.match(dayBefore))) {
+    days = 1; direction = -1;
+    eventPhrase = m[1].trim();
+  } else if ((m = text.match(dayAfter))) {
+    days = 1; direction = 1;
+    eventPhrase = m[1].trim();
+  } else if ((m = text.match(whenPat))) {
+    days = 0; direction = 1; // "when X arrives" → schedule for that day
+    eventPhrase = m[1].trim() + (text.match(/arrives?|lands?|gets?\s+back|comes?\s+back|returns?|is\s+back|gets?\s+here|shows?\s+up|starts?|begins?|happens?|finishes?|ends?/i)||[''])[0];
+    eventPhrase = eventPhrase.trim();
+  } else {
+    return null; // no event pattern found
+  }
+
+  if (!eventPhrase) return null;
+
+  // Clean up event phrase — remove trailing punctuation
+  eventPhrase = eventPhrase.replace(/[.,!?]+$/, '').trim();
+
+  // Extract task title = everything before the timing clause
+  // Remove the timing clause from original text to get the task
+  taskPart = text
+    .replace(/remind me to\s*/i, '')
+    .replace(/remind me\s*/i, '')
+    .replace(new RegExp(escapeReg(m[0]), 'i'), '')
+    .replace(/\s+/g, ' ').trim()
+    .replace(/^[,.\s]+|[,.\s]+$/g, '').trim();
+
+  return { eventPhrase, days, direction, taskPart };
 }
+
+function escapeReg(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Legacy wrapper for birthday-specific calls
+function parseBirthdayReminder(text) {
+  // Birthday patterns - extract name and treat birthday as the event
+  const wordNums = {one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
+  const beforeM = text.match(/(?:(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+days?\s+before|the\s+day\s+before)\s+([\w]+)(?:'s|s')?\s+birthday/i);
+  if (beforeM) {
+    const numStr = beforeM[1] || '1';
+    const days = wordNums[numStr?.toLowerCase()] ?? (parseInt(numStr)||1);
+    return { name: resolvePersonName(beforeM[2], text), days, isBirthday: true };
+  }
+  const onM = text.match(/(?:on|for)\s+([\w]+(?:'s|s')?|his|her|my\s+\w+(?:'s)?)\s+birthday/i);
+  if (onM) {
+    const rawName = onM[1].replace(/'s$/i,'').replace(/s'$/i,'').trim();
+    return { name: resolvePersonName(rawName, text), days: 0, isBirthday: true };
+  }
+  const simpleM = text.match(/([\w]+)(?:'s|s')\s+birthday/i);
+  if (simpleM) {
+    return { name: resolvePersonName(simpleM[1], text), days: 0, isBirthday: true };
+  }
+  return null;
+}
+
+function resolvePersonName(raw, fullText) {
+  const r = raw.toLowerCase().trim();
+  if (r === 'my' || r === 'his' || r === 'her') {
+    const rel = fullText.match(/my\s+([\w]+(?:\s+[\w]+)?)/i);
+    if (rel) return rel[1].charAt(0).toUpperCase() + rel[1].slice(1);
+    return 'them';
+  }
+  if (/^(mom|mother|mama|mum)$/i.test(r)) return 'Mom';
+  if (/^(dad|father|papa|pop)$/i.test(r)) return 'Dad';
+  if (/^(wife|husband|partner|girlfriend|boyfriend|spouse)$/i.test(r)) return raw.charAt(0).toUpperCase()+raw.slice(1);
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
 
 async function startPolling() {
   console.log('Starting Telegram polling...');
@@ -571,6 +671,26 @@ async function startPolling() {
         const effectiveLower = cleanLower;
 
         // ── PENDING QUESTION HANDLER ──
+        if (pendingQuestion && pendingQuestion.type === 'event') {
+          // User is answering "when is [event]?"
+          const { date: eventDate, found } = parseNaturalDate(finalText.trim());
+          if (found) {
+            const { eventPhrase, days, direction, taskTitle } = pendingQuestion;
+            people[eventPhrase.toLowerCase()] = { eventDate };
+            const anchor = new Date(eventDate+'T12:00');
+            anchor.setDate(anchor.getDate() + direction * days);
+            const newTask = {id:Date.now().toString(),title:taskTitle,type:'once',date:dateStr(anchor),time:null,priority:'medium'};
+            tasks.push(newTask); await saveTasksToDB();
+            pendingQuestion = null;
+            const dirLabel = direction===-1?(days===1?'the day before':days+' days before'):direction===1?(days===1?'the day after':days+' days after'):'on';
+            const rDay = anchor.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+            await reply(`✅ "${taskTitle}"\n📅 ${rDay}\n📌 ${dirLabel} "${eventPhrase}"`, isVoiceMessage);
+          } else {
+            await reply(`I didn't catch that date. Try "May 15", "next Friday", or "June 3rd".`, isVoiceMessage);
+          }
+          continue;
+        }
+
         if (pendingQuestion && pendingQuestion.type === 'birthday') {
           const answer = finalText.trim();
           // Try to parse a date from the answer (e.g. "May 15", "15th of May", "05/15")
@@ -612,18 +732,19 @@ async function startPolling() {
         if (bdayReminder) {
           const { name, days: rDays } = bdayReminder;
           const nameKey = name.toLowerCase();
-          const reminderTitle = effectiveText.replace(new RegExp(`\\b${rDays}\\s+days?\\s+before\\s+${name}'?s?\\s+birthday|the\\s+day\\s+before\\s+${name}'?s?\\s+birthday`, 'i'), '').replace(/remind me to|remind me/i,'').trim() || `Buy flowers for ${name}`;
+          const reminderTitle = effectiveText.replace(/remind me to|remind me/i,'')
+            .replace(new RegExp(`(?:\\d+\\s+days?\\s+(?:before|after)|the\\s+day\\s+before|on)\\s+${name}'?s?\\s+birthday`, 'i'), '')
+            .replace(/birthday/i,'').replace(/\s+/g,' ').trim()
+            || (rDays===0 ? `${name}'s birthday` : `Reminder for ${name}'s birthday`);
           if (people[nameKey] && people[nameKey].birthday) {
-            // We already know the birthday
             const { task, birthdayDate } = scheduleBirthdayReminder(name, people[nameKey].birthday, rDays, reminderTitle);
             await saveTasksToDB();
             const bday = new Date(birthdayDate+'T12:00').toLocaleDateString('en-US',{month:'long',day:'numeric'});
             const rDay = new Date(task.date+'T12:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
             await reply(`✅ Reminder set: "${task.title}"\n📅 ${rDay}\n🎂 ${name}'s birthday: ${bday}`, isVoiceMessage);
           } else {
-            // Ask for birthday
             pendingQuestion = { type: 'birthday', name, days: rDays, reminderTitle };
-            await reply(`🎂 When is ${name}'s birthday? (e.g. "May 15")`, isVoiceMessage);
+            await reply(`🎂 When is ${name}'s birthday?`, isVoiceMessage);
           }
           continue;
         }
@@ -896,12 +1017,46 @@ const server = http.createServer((req, res) => {
         let replyText = '';
         const setReply = (t) => { replyText = t; lastBotReply = { text: t, timestamp: Date.now() }; };
 
+        // ── GENERAL EVENT REMINDER ──
+        const eventReminder = parseEventReminder(effectiveText);
+        if (eventReminder) {
+          const { eventPhrase, days, direction, taskPart } = eventReminder;
+          const eventKey = eventPhrase.toLowerCase();
+          const dirLabel = direction===-1?(days===1?'the day before':days+' days before'):direction===1?(days===1?'the day after':days+' days after'):'on the day of';
+          const taskTitle = taskPart || `Reminder ${dirLabel} ${eventPhrase}`;
+          if (people[eventKey] && people[eventKey].eventDate) {
+            const { date: eDate } = parseNaturalDate(people[eventKey].eventDate);
+            const anchor = new Date(eDate+'T12:00');
+            anchor.setDate(anchor.getDate() + direction * days);
+            const now = getEasternDate();
+            if (anchor < now) {
+              pendingQuestion = { type:'event', eventPhrase, days, direction, taskTitle };
+              await reply(`⚠️ That date has passed. When is the new date for "${eventPhrase}"?`, isVoiceMessage);
+            } else {
+              const newTask = {id:Date.now().toString(),title:taskTitle,type:'once',date:dateStr(anchor),time:null,priority:'medium'};
+              tasks.push(newTask); await saveTasksToDB();
+              const rDay = anchor.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+              await reply(`✅ "${taskTitle}"\n📅 ${rDay}`, isVoiceMessage);
+            }
+          } else {
+            pendingQuestion = { type:'event', eventPhrase, days, direction, taskTitle };
+            await reply(`📅 When is "${eventPhrase}"?`, isVoiceMessage);
+          }
+          await sendTelegram(`🎙️ "${transcribed}"\n\n${replyText}`);
+          res.writeHead(200,{'Content-Type':'application/json'});
+          res.end(JSON.stringify({ok:true,reply:replyText,transcript:transcribed}));
+          return;
+        }
+
         // ── BIRTHDAY REMINDER ──
         const bdayReminder = parseBirthdayReminder(effectiveText);
         if (bdayReminder) {
           const { name, days: rDays } = bdayReminder;
           const nameKey = name.toLowerCase();
-          const reminderTitle = effectiveText.replace(new RegExp(`\\d+\\s+days?\\s+before\\s+${name}'?s?\\s+birthday|the\\s+day\\s+before\\s+${name}'?s?\\s+birthday`, 'i'), '').replace(/remind me to|remind me/i,'').trim() || `Buy flowers for ${name}`;
+          const reminderTitle = effectiveText.replace(/remind me to|remind me/i,'')
+            .replace(new RegExp(`(?:\\d+\\s+days?\\s+(?:before|after)|the\\s+day\\s+before|on)\\s+${name}'?s?\\s+birthday`, 'i'), '')
+            .replace(/birthday/i,'').replace(/\s+/g,' ').trim()
+            || (rDays===0 ? `${name}'s birthday` : `Reminder for ${name}'s birthday`);
           if (people[nameKey] && people[nameKey].birthday) {
             const { task, birthdayDate } = scheduleBirthdayReminder(name, people[nameKey].birthday, rDays, reminderTitle);
             await saveTasksToDB();
@@ -910,7 +1065,7 @@ const server = http.createServer((req, res) => {
             setReply(`✅ Reminder: "${task.title}"\n📅 ${rDay}\n🎂 ${name}'s birthday: ${bday}`);
           } else {
             pendingQuestion = { type: 'birthday', name, days: rDays, reminderTitle };
-            setReply(`🎂 When is ${name}'s birthday? Reply in Telegram with the date (e.g. "May 15")`);
+            setReply(`🎂 When is ${name}'s birthday?`);
           }
           await sendTelegram(`🎙️ "${transcribed}"\n\n${replyText}`);
           res.writeHead(200,{'Content-Type':'application/json'});
@@ -970,16 +1125,38 @@ const server = http.createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/birthday') {
       try {
         const data = JSON.parse(body);
-        const { name, mmdd } = data; // mmdd = "MM-DD"
+        const { name, mmdd, eventDate, eventPhrase } = data;
+
+        // Generic event (non-birthday)
+        if (eventPhrase && eventDate) {
+          const eventKey = eventPhrase.toLowerCase();
+          people[eventKey] = { eventDate };
+          const pq = pendingQuestion && pendingQuestion.type === 'event' ? pendingQuestion : null;
+          pendingQuestion = null;
+          let replyText = `📅 Got it! "${eventPhrase}" is on ${eventDate}.`;
+          if (pq) {
+            const { date: eDate } = parseNaturalDate(eventDate);
+            const anchor = new Date(eDate+'T12:00');
+            anchor.setDate(anchor.getDate() + pq.direction * pq.days);
+            const newTask = {id:Date.now().toString(),title:pq.taskTitle,type:'once',date:dateStr(anchor),time:null,priority:'medium'};
+            tasks.push(newTask); await saveTasksToDB();
+            const rDay = anchor.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+            replyText = `✅ "${pq.taskTitle}"\n📅 ${rDay}`;
+          }
+          lastBotReply = { text: replyText, timestamp: Date.now() };
+          await sendTelegram(replyText);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, reply: replyText }));
+          return;
+        }
+
+        // Birthday
         if (!name || !mmdd) { res.writeHead(400); res.end('{}'); return; }
-        // Save person
         people[name.toLowerCase()] = { name, birthday: mmdd };
-        // Find pending question for this person if any
         const pq = pendingQuestion && pendingQuestion.type === 'birthday' && pendingQuestion.name.toLowerCase() === name.toLowerCase() ? pendingQuestion : null;
         const rDays = pq ? pq.days : 1;
         const reminderTitle = pq ? pq.reminderTitle : `${name}'s birthday reminder`;
         pendingQuestion = null;
-        // Schedule reminder
         const { task, birthdayDate } = scheduleBirthdayReminder(name, mmdd, rDays, reminderTitle);
         await saveTasksToDB();
         const bday = new Date(birthdayDate+'T12:00').toLocaleDateString('en-US',{month:'long',day:'numeric'});
@@ -990,9 +1167,9 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, reply }));
       } catch(e) {
-        console.error('Birthday error:', e.message);
+        console.error('Event/birthday error:', e.message);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, reply: '❌ Could not save birthday.' }));
+        res.end(JSON.stringify({ ok: false, reply: '❌ Could not save.' }));
       }
       return;
     }
