@@ -308,7 +308,10 @@ function buildListMsgForDate(d) {
 }
 
 // Smart reply — voice if input was voice, text otherwise
+let lastBotReply = { text: '', timestamp: 0 };
+
 async function reply(text, voice) {
+  lastBotReply = { text, timestamp: Date.now() };
   if (voice) {
     await sendVoiceReply(text);
   } else {
@@ -634,6 +637,11 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, reply: "Sorry, couldn't connect. Try again!" }));
       }
+      return;
+    }
+    if (req.method === 'GET' && req.url.startsWith('/lastReply')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, ...lastBotReply }));
       return;
     }
     if (req.method === 'GET' && req.url === '/ping') { res.writeHead(200); res.end('pong'); return; }
