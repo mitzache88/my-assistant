@@ -9,6 +9,9 @@ const CHAT_ID = process.env.CHAT_ID;
 const OPENAI_KEY = process.env.OPENAI_KEY;
 
 let tasks = [];
+let people = {}; // { "andreea": { birthday: "05-15" } }  MM-DD format
+let pendingQuestion = null; // { type: 'birthday', name, reminderDays, reminderTitle }
+
 try { tasks = JSON.parse(process.env.TASKS || '[]'); } catch(e) {}
 
 const JSONBIN_ID = process.env.JSONBIN_ID;
@@ -28,16 +31,16 @@ async function loadTasksFromDB() {
         res.on('end', () => { try { resolve(JSON.parse(body)); } catch(e) { resolve(null); } });
       }).on('error', () => resolve(null));
     });
-    if (data && data.record && Array.isArray(data.record.tasks)) {
-      tasks = data.record.tasks;
-      console.log(`Loaded ${tasks.length} tasks from DB`);
+    if (data && data.record) {
+      if (Array.isArray(data.record.tasks)) { tasks = data.record.tasks; console.log(`Loaded ${tasks.length} tasks from DB`); }
+      if (data.record.people) { people = data.record.people; console.log(`Loaded ${Object.keys(people).length} people from DB`); }
     }
   } catch(e) { console.error('Load DB error:', e.message); }
 }
 
 async function saveTasksToDB() {
   try {
-    const body = JSON.stringify({ tasks });
+    const body = JSON.stringify({ tasks, people });
     await new Promise(resolve => {
       const options = {
         hostname: 'api.jsonbin.io',
@@ -56,7 +59,7 @@ async function saveTasksToDB() {
       req.on('error', resolve);
       req.write(body); req.end();
     });
-    console.log(`Saved ${tasks.length} tasks to DB`);
+    console.log(`Saved ${tasks.length} tasks + ${Object.keys(people).length} people to DB`);
   } catch(e) { console.error('Save DB error:', e.message); }
 }
 function sendTelegram(text) {
@@ -318,6 +321,179 @@ async function reply(text, voice) {
     await sendTelegram(text);
   }
 }
+// Holiday lookup table
+function getHoliday(name, year) {
+  const n = name.toLowerCase().replace(/[\s'\-]/g,'');
+  const fixed = {
+    newyears:`${year}-01-01`,newyearsday:`${year}-01-01`,
+    valentinesday:`${year}-02-14`,valentines:`${year}-02-14`,
+    stpatricksday:`${year}-03-17`,stpatricks:`${year}-03-17`,
+    halloween:`${year}-10-31`,
+    christmas:`${year}-12-25`,christmasday:`${year}-12-25`,
+    christmaseve:`${year}-12-24`,
+    newyearseve:`${year}-12-31`,
+    independenceday:`${year}-07-04`,july4th:`${year}-07-04`,fourthofjuly:`${year}-07-04`,
+    veteransday:`${year}-11-11`,cincodemayo:`${year}-05-05`,
+  };
+  if (fixed[n]) return fixed[n];
+  // nth weekday helpers
+  const nth = (y,mo,wd,n) => { const d=new Date(y,mo,1);let c=0;while(d.getMonth()===mo){if(d.getDay()===wd){c++;if(c===n)return dateStr(d);}d.setDate(d.getDate()+1);}return null; };
+  const last = (y,mo,wd) => { const d=new Date(y,mo+1,0);while(d.getDay()!==wd)d.setDate(d.getDate()-1);return dateStr(d); };
+  // Easter (Anonymous Gregorian)
+  const easter = (y) => { const a=y%19,b=Math.floor(y/100),c=y%100,d=Math.floor(b/4),e=b%4,f=Math.floor((b+8)/25),g=Math.floor((b-f+1)/3),h=(19*a+b-d-g+15)%30,i=Math.floor(c/4),k=c%4,l=(32+2*e+2*i-h-k)%7,m=Math.floor((a+11*h+22*l)/451),mo=Math.floor((h+l-7*m+114)/31),dy=((h+l-7*m+114)%31)+1;return new Date(y,mo-1,dy); };
+  const computed = {
+    mlkday:()=>nth(year,0,1,3), martinlutherking:()=>nth(year,0,1,3),
+    presidentsday:()=>nth(year,1,1,3),
+    mothersday:()=>nth(year,4,0,2),
+    fathersday:()=>nth(year,5,0,3),
+    memorialday:()=>last(year,4,1),
+    laborday:()=>nth(year,8,1,1),
+    columbusday:()=>nth(year,9,1,2),
+    thanksgiving:()=>nth(year,10,4,4),thanksgivingday:()=>nth(year,10,4,4),
+    blackfriday:()=>{ const t=nth(year,10,4,4);if(!t)return null;const d=new Date(t+'T12:00');d.setDate(d.getDate()+1);return dateStr(d); },
+    easter:()=>dateStr(easter(year)),
+    goodfriday:()=>{ const d=easter(year);d.setDate(d.getDate()-2);return dateStr(d); },
+  };
+  if (computed[n]) return computed[n]();
+  return null;
+}
+
+// Parse natural language date from text, returns { date, cleaned }
+function parseNaturalDate(text) {
+  let cleaned = text;
+  let date = getTodayStr();
+  const now = getEasternDate();
+  const yr = now.getFullYear();
+  const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+  const monthNames = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+  const monthShort = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  const allMonths = [...monthNames,...monthShort].join('|');
+
+  function parseMonthDay(monthStr, dayNum, yearStr) {
+    let mIdx = monthNames.indexOf(monthStr.toLowerCase());
+    if (mIdx === -1) mIdx = monthShort.indexOf(monthStr.toLowerCase());
+    const day = parseInt(dayNum);
+    let year = yearStr ? parseInt(yearStr) : yr;
+    const candidate = new Date(year, mIdx, day);
+    if (candidate < now && !yearStr) year++;
+    return new Date(year, mIdx, day);
+  }
+
+  // "X days before/after [holiday name]" or "the day before [holiday]"
+  const holidayNames = 'christmas|christmas eve|christmas day|mothers day|fathers day|thanksgiving|halloween|new years|new years eve|new years day|valentines day|valentines|memorial day|labor day|independence day|july 4th|fourth of july|easter|good friday|black friday|columbus day|veterans day|cinco de mayo|st patricks day|mlk day|martin luther king|presidents day';
+  const relHoliday = new RegExp(`(?:(\\d+|one|two|three|four|five|six|seven|eight|nine|ten)\\s+days?\\s+|(the\\s+day\\s+))\\s*(before|after|prior to|ahead of)\\s+(${holidayNames})`, 'i');
+  const wordNums = {one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
+
+  let m;
+  if ((m = cleaned.match(relHoliday))) {
+    const numStr = m[1] || '1';
+    const days = wordNums[numStr.toLowerCase()] !== undefined ? wordNums[numStr.toLowerCase()] : (parseInt(numStr)||1);
+    const isBefore = /before|prior|ahead/.test(m[3].toLowerCase());
+    const holidayKey = m[4].trim();
+    let hDate = getHoliday(holidayKey, yr);
+    // If holiday already passed this year, use next year
+    if (hDate && new Date(hDate+'T12:00') < now) hDate = getHoliday(holidayKey, yr+1);
+    if (hDate) {
+      const target = new Date(hDate+'T12:00');
+      target.setDate(target.getDate() + (isBefore ? -days : days));
+      date = dateStr(target);
+      cleaned = cleaned.replace(m[0],'').replace(/\bon\b/gi,'').trim();
+    }
+  } else {
+    // "1 day before may 15" / "4 days after may 15"
+    const relMD = new RegExp(`(\\d+)\\s+days?\\s+(before|after|prior to|from)\\s+(?:the\\s+)?(${allMonths})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:\\s+(\\d{4}))?`, 'i');
+    const relDM = new RegExp(`(\\d+)\\s+days?\\s+(before|after|prior to|from)\\s+(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${allMonths})(?:\\s+(\\d{4}))?`, 'i');
+    const relSimple = /(\\d+)\\s+days?\\s+(before|after|prior to|from)\\s+(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i;
+    const monthDayPattern = new RegExp(`\\b(${allMonths})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:\\s+(\\d{4}))?\\b`, 'i');
+    const dayMonthPattern = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${allMonths})(?:\\s+(\\d{4}))?\\b`, 'i');
+
+    if ((m = cleaned.match(relMD))) {
+      const offset = parseInt(m[1]); const dir = /before|prior/i.test(m[2]) ? -1 : 1;
+      const anchor = parseMonthDay(m[3], m[4], m[5]); anchor.setDate(anchor.getDate() + dir * offset);
+      date = dateStr(anchor); cleaned = cleaned.replace(m[0],'').replace(/\bon\b/gi,'').trim();
+    } else if ((m = cleaned.match(relDM))) {
+      const offset = parseInt(m[1]); const dir = /before|prior/i.test(m[2]) ? -1 : 1;
+      const anchor = parseMonthDay(m[4], m[3], m[5]); anchor.setDate(anchor.getDate() + dir * offset);
+      date = dateStr(anchor); cleaned = cleaned.replace(m[0],'').replace(/\bon\b/gi,'').trim();
+    } else if ((m = cleaned.match(relSimple))) {
+      const offset = parseInt(m[1]); const dir = /before|prior/i.test(m[2]) ? -1 : 1;
+      let anchor = getEasternDate(); const ref = m[3].toLowerCase();
+      if (ref==='tomorrow') anchor.setDate(anchor.getDate()+1);
+      else if (dayNames.includes(ref)) { let da=dayNames.indexOf(ref)-anchor.getDay(); if(da<=0)da+=7; anchor.setDate(anchor.getDate()+da); }
+      anchor.setDate(anchor.getDate() + dir * offset);
+      date = dateStr(anchor); cleaned = cleaned.replace(m[0],'').replace(/\bon\b/gi,'').trim();
+    } else if ((m = cleaned.match(monthDayPattern))) {
+      const anchor = parseMonthDay(m[1], m[2], m[3]); date = dateStr(anchor);
+      cleaned = cleaned.replace(m[0],'').replace(/\bon\b/gi,'').trim();
+    } else if ((m = cleaned.match(dayMonthPattern))) {
+      const anchor = parseMonthDay(m[2], m[1], m[3]); date = dateStr(anchor);
+      cleaned = cleaned.replace(m[0],'').replace(/\bon\b/gi,'').trim();
+    } else if (/\btomorrow\b/i.test(cleaned)) {
+      const t = getEasternDate(); t.setDate(t.getDate()+1); date = dateStr(t);
+      cleaned = cleaned.replace(/\btomorrow\b/i,'').trim();
+    } else if (/\btoday\b|\btonight\b/i.test(cleaned)) {
+      cleaned = cleaned.replace(/\btoday\b|\btonight\b/gi,'').trim();
+    } else if (/\bnext week\b/i.test(cleaned)) {
+      const t = getEasternDate(); t.setDate(t.getDate()+7); date = dateStr(t);
+      cleaned = cleaned.replace(/\bnext week\b/i,'').trim();
+    } else {
+      const dm = cleaned.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i);
+      if (dm) {
+        const td = dayNames.indexOf(dm[1].toLowerCase());
+        let da = td - now.getDay(); if(da<=0)da+=7;
+        const t = new Date(now); t.setDate(now.getDate()+da);
+        date = dateStr(t); cleaned = cleaned.replace(dm[0],'').trim();
+      }
+    }
+  }
+  return { date, cleaned };
+}
+// Schedule a birthday reminder task
+function scheduleBirthdayReminder(name, mmdd, reminderDays, reminderTitle) {
+  const now = getEasternDate();
+  const yr = now.getFullYear();
+  const [mm, dd] = mmdd.split('-').map(Number);
+
+  // Find next upcoming birthday
+  let bday = new Date(yr, mm-1, dd);
+  if (bday < now) bday = new Date(yr+1, mm-1, dd);
+
+  // Calculate reminder date
+  const reminderDate = new Date(bday);
+  reminderDate.setDate(reminderDate.getDate() - reminderDays);
+
+  const taskTitle = reminderTitle || `Buy gift for ${name}'s birthday`;
+  const dateKey = dateStr(reminderDate);
+
+  // Remove old reminder for same person if exists
+  const existing = tasks.findIndex(t => t._birthdayFor === name.toLowerCase() && t._birthdayReminder);
+  if (existing > -1) tasks.splice(existing, 1);
+
+  const newTask = {
+    id: Date.now().toString(),
+    title: taskTitle,
+    type: 'once',
+    date: dateKey,
+    time: null,
+    priority: 'medium',
+    _birthdayFor: name.toLowerCase(),
+    _birthdayReminder: true
+  };
+  tasks.push(newTask);
+  return { task: newTask, birthdayDate: dateStr(bday) };
+}
+
+// Detect "X days before [name]'s birthday" pattern
+function parseBirthdayReminder(text) {
+  const m = text.match(/(?:(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+days?\s+before|the\s+day\s+before)\s+(\w+)(?:'s|s')?\s+birthday/i);
+  if (!m) return null;
+  const wordNums = {one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
+  const numStr = m[1] || '1';
+  const days = wordNums[numStr?.toLowerCase()] ?? (parseInt(numStr)||1);
+  const name = m[2];
+  return { name, days };
+}
+
 async function startPolling() {
   console.log('Starting Telegram polling...');
   let offset = 0;
@@ -382,6 +558,65 @@ async function startPolling() {
         const cleanLower = cleanText.toLowerCase();
         const effectiveText = cleanText;
         const effectiveLower = cleanLower;
+
+        // ── PENDING QUESTION HANDLER ──
+        // If bot asked for birthday info and is waiting for answer
+        if (pendingQuestion && pendingQuestion.type === 'birthday') {
+          const answer = finalText.trim();
+          // Try to parse a date from the answer (e.g. "May 15", "15th of May", "05/15")
+          let mmdd = null;
+          const monthNames = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+          const monthShort = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+          const allMonths = [...monthNames,...monthShort].join('|');
+          let m2;
+          const mdP = new RegExp(`\\b(${allMonths})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, 'i');
+          const dmP = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${allMonths})\\b`, 'i');
+          const slashP = /\b(\d{1,2})[\/\-](\d{1,2})\b/;
+          if ((m2 = answer.match(mdP))) {
+            let mIdx = monthNames.indexOf(m2[1].toLowerCase()); if(mIdx===-1) mIdx=monthShort.indexOf(m2[1].toLowerCase());
+            mmdd = `${String(mIdx+1).padStart(2,'0')}-${String(parseInt(m2[2])).padStart(2,'0')}`;
+          } else if ((m2 = answer.match(dmP))) {
+            let mIdx = monthNames.indexOf(m2[2].toLowerCase()); if(mIdx===-1) mIdx=monthShort.indexOf(m2[2].toLowerCase());
+            mmdd = `${String(mIdx+1).padStart(2,'0')}-${String(parseInt(m2[1])).padStart(2,'0')}`;
+          } else if ((m2 = answer.match(slashP))) {
+            mmdd = `${String(parseInt(m2[1])).padStart(2,'0')}-${String(parseInt(m2[2])).padStart(2,'0')}`;
+          }
+          if (mmdd) {
+            const { name, days: rDays, reminderTitle } = pendingQuestion;
+            people[name.toLowerCase()] = { name, birthday: mmdd };
+            const { task, birthdayDate } = scheduleBirthdayReminder(name, mmdd, rDays, reminderTitle);
+            await saveTasksToDB();
+            pendingQuestion = null;
+            const bday = new Date(birthdayDate+'T12:00').toLocaleDateString('en-US',{month:'long',day:'numeric'});
+            const rDay = new Date(task.date+'T12:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+            await reply(`🎂 Got it! ${name}'s birthday is ${bday}.\n✅ Reminder set: "${task.title}"\n📅 ${rDay}`, isVoiceMessage);
+          } else {
+            await reply(`I didn't catch that date. Try something like "May 15" or "15th of May".`, isVoiceMessage);
+          }
+          continue;
+        }
+
+        // ── BIRTHDAY REMINDER DETECTION ──
+        // "remind me to buy flowers one day before Andreea's birthday"
+        const bdayReminder = parseBirthdayReminder(effectiveText);
+        if (bdayReminder) {
+          const { name, days: rDays } = bdayReminder;
+          const nameKey = name.toLowerCase();
+          const reminderTitle = effectiveText.replace(new RegExp(`\\b${rDays}\\s+days?\\s+before\\s+${name}'?s?\\s+birthday|the\\s+day\\s+before\\s+${name}'?s?\\s+birthday`, 'i'), '').replace(/remind me to|remind me/i,'').trim() || `Buy flowers for ${name}`;
+          if (people[nameKey] && people[nameKey].birthday) {
+            // We already know the birthday
+            const { task, birthdayDate } = scheduleBirthdayReminder(name, people[nameKey].birthday, rDays, reminderTitle);
+            await saveTasksToDB();
+            const bday = new Date(birthdayDate+'T12:00').toLocaleDateString('en-US',{month:'long',day:'numeric'});
+            const rDay = new Date(task.date+'T12:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+            await reply(`✅ Reminder set: "${task.title}"\n📅 ${rDay}\n🎂 ${name}'s birthday: ${bday}`, isVoiceMessage);
+          } else {
+            // Ask for birthday
+            pendingQuestion = { type: 'birthday', name, days: rDays, reminderTitle };
+            await reply(`🎂 When is ${name}'s birthday? (e.g. "May 15")`, isVoiceMessage);
+          }
+          continue;
+        }
 
         // Check for "when" queries — find a specific task
         const whenQuery = effectiveLower.match(/\b(when (do i|should i|am i|is|are)|when'?s)\s+(my\s+)?(.*?)\??$/i)
@@ -453,38 +688,11 @@ async function startPolling() {
           const rest = effectiveText.replace(/^(add|schedule|remind me to|remind me|set( up| a)?|create( a)?|new task|put( in)?|i need to|don'?t forget( to)?|note( to self)?|book( a)?|plan( a)?|make( a)?|set a reminder( to)?|add a|log)\s+/i, '').trim();
           if (!rest) { await reply('❌ Please include a task name.\nExample: add wash the car saturday 12pm'); continue; }
 
-          let date = getTodayStr();
           let title = rest;
           let time = null;
-
-          // Strip filler words that confuse parsing
-          // e.g. "on friday", "on saturday at", "for tomorrow"
-          let cleaned = title
-            .replace(/\bon\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)\b/gi, '$1')
-            .replace(/\bfor\s+(today|tomorrow)\b/gi, '$1')
-            .replace(/\bthis\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '$1')
-            .replace(/\bnext\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '$1');
-
-          // Parse date
-          const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-          const dayMatch = cleaned.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i);
-
-          if (/\btomorrow\b/i.test(cleaned)) {
-            const tom = getEasternDate(); tom.setDate(tom.getDate()+1);
-            date = dateStr(tom);
-            cleaned = cleaned.replace(/\btomorrow\b/i, '').trim();
-          } else if (/\btoday\b/i.test(cleaned)) {
-            cleaned = cleaned.replace(/\btoday\b/i, '').trim();
-          } else if (dayMatch) {
-            const targetDay = dayNames.indexOf(dayMatch[1].toLowerCase());
-            const now = getEasternDate();
-            let daysAhead = targetDay - now.getDay();
-            if (daysAhead <= 0) daysAhead += 7;
-            const target = new Date(now);
-            target.setDate(now.getDate() + daysAhead);
-            date = dateStr(target);
-            cleaned = cleaned.replace(dayMatch[0], '').trim();
-          }
+          let cleaned = rest.replace(/\bon\s+/gi,' ').trim();
+          const { date, cleaned: cleaned2 } = parseNaturalDate(cleaned);
+          cleaned = cleaned2;
 
           // Parse time — handle many formats:
           // "at 3pm", "at 3:30pm", "3pm", "15:00", "3 pm", "at 3", "@3pm"
@@ -671,6 +879,28 @@ const server = http.createServer((req, res) => {
         let replyText = '';
         const setReply = (t) => { replyText = t; lastBotReply = { text: t, timestamp: Date.now() }; };
 
+        // ── BIRTHDAY REMINDER ──
+        const bdayReminder = parseBirthdayReminder(effectiveText);
+        if (bdayReminder) {
+          const { name, days: rDays } = bdayReminder;
+          const nameKey = name.toLowerCase();
+          const reminderTitle = effectiveText.replace(new RegExp(`\\d+\\s+days?\\s+before\\s+${name}'?s?\\s+birthday|the\\s+day\\s+before\\s+${name}'?s?\\s+birthday`, 'i'), '').replace(/remind me to|remind me/i,'').trim() || `Buy flowers for ${name}`;
+          if (people[nameKey] && people[nameKey].birthday) {
+            const { task, birthdayDate } = scheduleBirthdayReminder(name, people[nameKey].birthday, rDays, reminderTitle);
+            await saveTasksToDB();
+            const bday = new Date(birthdayDate+'T12:00').toLocaleDateString('en-US',{month:'long',day:'numeric'});
+            const rDay = new Date(task.date+'T12:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+            setReply(`✅ Reminder: "${task.title}"\n📅 ${rDay}\n🎂 ${name}'s birthday: ${bday}`);
+          } else {
+            pendingQuestion = { type: 'birthday', name, days: rDays, reminderTitle };
+            setReply(`🎂 When is ${name}'s birthday? Reply in Telegram with the date (e.g. "May 15")`);
+          }
+          await sendTelegram(`🎙️ "${transcribed}"\n\n${replyText}`);
+          res.writeHead(200,{'Content-Type':'application/json'});
+          res.end(JSON.stringify({ok:true,reply:replyText,transcript:transcribed}));
+          return;
+        }
+
         // Schedule/list query
         const scheduleQuery = /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.*\b(tasks?|schedule|list|agenda|plan)\b|\b(tasks?|schedule|list|agenda|what do i have)\b/i.test(effectiveLower)
           || /^(today|tomorrow|list|tasks|schedule)[\?]?$/i.test(effectiveLower.trim());
@@ -689,13 +919,12 @@ const server = http.createServer((req, res) => {
           const task = tasks.find(t => t.title.toLowerCase().includes(query));
           if (task) { if(!task.doneDate)task.doneDate={};task.doneDate[getTodayStr()]=true;await saveTasksToDB();setReply(`✅ Marked done: ${task.title}`); }
           else setReply(`❌ Task not found: "${query}"`);
-        } else if (/^(add|schedule|remind me to|remind me|create|i need to|book|plan|don'?t forget|note to self)\s+/i.test(effectiveLower) || /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(effectiveLower)) {
-          let date = getTodayStr(), title = effectiveText, time = null;
-          const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-          let cleaned = title.replace(/^(add|schedule|remind me to|remind me|create|i need to|book|plan|don'?t forget to?|note to self)\s+/i,'').replace(/\bon\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)\b/gi,'$1').replace(/\bfor\s+(today|tomorrow)\b/gi,'$1').trim();
-          if (/\btomorrow\b/i.test(cleaned)){const t=getEasternDate();t.setDate(t.getDate()+1);date=dateStr(t);cleaned=cleaned.replace(/\btomorrow\b/i,'').trim();}
-          else if (/\btoday\b/i.test(cleaned)){cleaned=cleaned.replace(/\btoday\b/i,'').trim();}
-          else {const dm=cleaned.match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i);if(dm){const td=dayNames.indexOf(dm[1].toLowerCase());const now=getEasternDate();let da=td-now.getDay();if(da<=0)da+=7;const t=new Date(now);t.setDate(now.getDate()+da);date=dateStr(t);cleaned=cleaned.replace(dm[0],'').trim();}}
+        } else if (/^(add|schedule|remind me to|remind me|create|i need to|book|plan|don'?t forget|note to self)\s+/i.test(effectiveLower) || /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\b/i.test(effectiveLower)) {
+          let title = effectiveText;
+          let time = null;
+          let cleaned = title.replace(/^(add|schedule|remind me to|remind me|create|i need to|book|plan|don'?t forget to?|note to self)\s+/i,'').replace(/\bon\s+/gi,' ').trim();
+          const { date, cleaned: cleaned2 } = parseNaturalDate(cleaned);
+          cleaned = cleaned2;
           const timePatterns=[/\bat\s+(\d{1,2}):(\d{2})\s*(am|pm)\b/i,/\bat\s+(\d{1,2})\s*(am|pm)\b/i,/\b(\d{1,2}):(\d{2})\s*(am|pm)\b/i,/\b(\d{1,2})\s*(am|pm)\b/i];
           for(const p of timePatterns){const m=cleaned.match(p);if(m){let h=parseInt(m[1]),mn=parseInt(m[2]||'0'),ap=(m[3]||m[2]||'').toLowerCase();if(ap==='pm'&&h!==12)h+=12;if(ap==='am'&&h===12)h=0;time=`${String(h).padStart(2,'0')}:${String(mn).padStart(2,'0')}`;cleaned=cleaned.replace(m[0],'').replace(/\bat\b/gi,'').trim();break;}}
           title=cleaned.replace(/\s+/g,' ').replace(/^[,.\s]+|[,.\s]+$/g,'').trim();
